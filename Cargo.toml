@@ -1,0 +1,28 @@
+[package]
+name = "iongram"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Experimental Rust MTProto server for messages, groups and channels"
+repository = "https://github.com/tdd761914-arch/IonGram"
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+grammers-crypto = "=0.10.0"
+rsa = { version = "0.9", features = ["pem", "hazmat"] }
+rand = "0.8"
+hex = "0.4"
+subtle = "2"
+crc32fast = "1"
+flate2 = "1"
+rusqlite = { version = "0.38", features = ["bundled"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The grammers hash macros expand to these crates at the call site.
+sha1 = "0.11"
+sha2 = "0.11"
+# rc1 changed the safe-prime API used by grammers-crypto 0.10.0.
+glass_pumpkin = "=2.0.0-rc0"

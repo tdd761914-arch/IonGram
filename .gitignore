@@ -1,0 +1,12 @@
+/target/
+/data/
+/wire-*/
+/wire*.log
+*.sqlite
+*.sqlite-*
+*.session
+*.session-*
+*.pem
+.env
+__pycache__/
+/schema/*.tl

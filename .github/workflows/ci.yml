@@ -1,0 +1,33 @@
+name: Rust
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tools/fetch_schemas.py
+      - run: cargo fmt --check
+      - run: cargo test --locked
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo build --locked
+      - run: pip install telethon==1.42.0
+      - name: MTProto interoperability
+        run: |
+          export IONGRAM_DATA="$RUNNER_TEMP/iongram-wire"
+          export IONGRAM_BIND=127.0.0.1:14430
+          target/debug/iongram serve > "$RUNNER_TEMP/iongram-wire.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" || true' EXIT
+          for attempt in $(seq 1 120); do
+            if grep -q 'IonGram listening' "$RUNNER_TEMP/iongram-wire.log"; then break; fi
+            sleep 1
+          done
+          python tests/mtproto_smoke.py "$IONGRAM_DATA" 14430

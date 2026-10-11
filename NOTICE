@@ -1,0 +1,19 @@
+IonGram's original Rust implementation is licensed under MIT.
+
+Behavioral references:
+- opsdff/InvestorGram, a84bb655efed1042420e9912d942ae23aaab5542.
+  MIT; Copyright 2023 Davide Galilei. Original attribution retained in LICENSE.
+- iamxvbaba/gramsrv, 45015f495369dbbe8bda60fd71ab85113297e87c.
+  Apache-2.0. Consulted for per-user update allocation, transactional Stars,
+  channel permissions and collectible username registry semantics. Go source
+  is not incorporated; IonGram implements these behaviors independently.
+
+API definitions are fetched separately from TGScheme/Schema:
+- layer 231: c57fca59ec12f46272a6daad77bc256b532af8ca
+- layer 229: fc7c7cc0d15461fa70263a4f539a6037a15231d5
+The generated schema identifies Copyright (C) 2026 Laky-64. IonGram does not
+relicense third-party schemas. See tools/fetch_schemas.py for sources and hashes.
+Core MTProto definitions come from telegramdesktop/tdesktop (same fetch tool).
+
+Cryptographic operations use grammers-crypto (MIT/Apache-2.0) and rsa
+(MIT/Apache-2.0). Each dependency retains its own license.

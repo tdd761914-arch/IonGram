@@ -1,0 +1,14 @@
+{
+  "api.tl": {
+    "url": "https://raw.githubusercontent.com/TGScheme/Schema/c57fca59ec12f46272a6daad77bc256b532af8ca/main_api.tl",
+    "sha256": "ba7565ef2d33127bbebe6b1b6f74f9307213998fc1395c6667f2a5a330a8f231"
+  },
+  "api_229.tl": {
+    "url": "https://raw.githubusercontent.com/TGScheme/Schema/fc7c7cc0d15461fa70263a4f539a6037a15231d5/main_api.tl",
+    "sha256": "6b1ecd271467c5c431e71c32e1055b7b3036ad5692baa5659c3e2ba893c74c37"
+  },
+  "mtproto.tl": {
+    "url": "https://raw.githubusercontent.com/telegramdesktop/tdesktop/6fed91ffab9861771a75f29df65031b3c80b6941/Telegram/SourceFiles/mtproto/scheme/mtproto.tl",
+    "sha256": "40c10255afb6cfcbcfc190a457a53b66ec9e410f6418cd97cc4c276709a739a9"
+  }
+}
