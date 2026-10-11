@@ -12,7 +12,7 @@ fn gift(s: &State, g: &Gift) -> Result<Value> {
 }
 fn unique(s: &State, o: &OwnedGift) -> Result<Value> {
     let g = &s.gifts[&o.gift];
-    let mut value = json!({"_":"starGiftUnique","id":o.id,"gift_id":g.id,"title":g.title,"slug":format!("IonGift-{}",o.id),"num":o.id,"owner_id":{"_":"peerUser","user_id":o.owner},"attributes":[{"_":"starGiftAttributeModel","name":"Original","document":s.doc(g.file)?,"rarity_permille":1000}],"availability_issued":g.sold,"availability_total":g.supply});
+    let mut value = json!({"_":"starGiftUnique","id":o.id,"gift_id":g.id,"title":g.title,"slug":format!("IonGift-{}",o.id),"num":o.id,"owner_id":{"_":"peerUser","user_id":o.owner},"attributes":[{"_":"starGiftAttributeModel","name":"Original","document":s.doc(g.file)?,"rarity":{"_":"starGiftAttributeRarity","permille":1000}}],"availability_issued":g.sold,"availability_total":g.supply});
     if o.resale > 0 {
         value["resell_amount"] = json!([amount(o.resale)]);
     }
@@ -142,7 +142,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         "payments.getStarGiftUpgradePreview" | "payments.getStarGiftUpgradeAttributes" => {
             let g = s.gifts.get(&int(v, "gift_id")).context("GIFT_NOT_FOUND")?;
             let attrs = vec![
-                json!({"_":"starGiftAttributeModel","name":"Original","document":s.doc(g.file)?,"rarity_permille":1000}),
+                json!({"_":"starGiftAttributeModel","name":"Original","document":s.doc(g.file)?,"rarity":{"_":"starGiftAttributeRarity","permille":1000}}),
             ];
             if name.ends_with("Preview") {
                 Ok(

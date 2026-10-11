@@ -94,6 +94,8 @@ async def main():
         history=await call('messages.getHistory',peer=me,offset_id=0,offset_date=0,add_offset=0,limit=10,max_id=0,min_id=0,hash=0)
         assert history['messages'][0]['message']=='hello Rust'
         await call('messages.editMessage',peer=me,id=mid,message='edited')
+        dialogs=await call('messages.getDialogs',offset_date=0,offset_id=0,offset_peer={'_':'inputPeerEmpty'},limit=100,hash=0)
+        assert dialogs['dialogs']
         group=await call('messages.createChat',users=[],title='Wire group')
         assert group['updates']['chats'][0]['title']=='Wire group'
         ch=await call('channels.createChannel',broadcast=True,title='Wire channel',about='test')

@@ -14,3 +14,7 @@ to Telegram's production balances, subscriptions or payment processing.
 
 Additional API layer: 229, pinned TGScheme commit
 fc7c7cc0d15461fa70263a4f539a6037a15231d5.
+
+Updates, Stars and collectible username semantics additionally reference gramsrv
+45015f495369dbbe8bda60fd71ab85113297e87c. The local namespace includes
+fragment.getCollectibleInfo and account/channel username activation/reordering.

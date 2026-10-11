@@ -285,3 +285,158 @@ fn premium_purchase_and_collectible_editable_order() {
     .unwrap();
     assert_eq!(s.user(a, a)["usernames"][0]["username"], "CollectibleName");
 }
+
+#[test]
+fn upgraded_gift_schema_and_atomic_resale() {
+    for layer in [229, 231] {
+        let (mut s, a, b, _) = fixture();
+        s.credit(a, 1000, "grant").unwrap();
+        s.credit(b, 1000, "grant").unwrap();
+        s.files.insert(
+            900,
+            File {
+                id: 900,
+                hash: 1,
+                reference: vec![1],
+                size: 10,
+                mime: "application/x-tgsticker".into(),
+                attrs: vec![],
+                owner: a,
+                date: 1,
+            },
+        );
+        s.gifts.insert(
+            800,
+            Gift {
+                id: 800,
+                title: "Test".into(),
+                file: 900,
+                price: 100,
+                supply: 2,
+                sold: 0,
+                upgrade: 50,
+            },
+        );
+        for method in [
+            "payments.getStarGiftUpgradePreview",
+            "payments.getStarGiftUpgradeAttributes",
+        ] {
+            rpc(&mut s, a, json!({"_":method,"gift_id":800}), layer).unwrap();
+        }
+        rpc(
+            &mut s,
+            a,
+            json!({"_":"payments.getStarGifts","hash":0}),
+            layer,
+        )
+        .unwrap();
+        let invoice = json!({"_":"inputInvoiceStarGift","peer":{"_":"inputPeerSelf"},"gift_id":800,"include_upgrade":true});
+        let form = rpc(
+            &mut s,
+            a,
+            json!({"_":"payments.getPaymentForm","invoice":invoice}),
+            layer,
+        )
+        .unwrap();
+        rpc(
+            &mut s,
+            a,
+            json!({"_":"payments.sendStarsForm","form_id":form["form_id"],"invoice":invoice}),
+            layer,
+        )
+        .unwrap();
+        let id = *s.owned.keys().next().unwrap();
+        let input = json!({"_":"inputSavedStarGiftUser","msg_id":id});
+        rpc(
+            &mut s,
+            a,
+            json!({"_":"payments.getSavedStarGift","stargift":[input]}),
+            layer,
+        )
+        .unwrap();
+        rpc(
+            &mut s,
+            a,
+            json!({"_":"payments.getUniqueStarGift","slug":format!("IonGift-{id}")}),
+            layer,
+        )
+        .unwrap();
+        rpc(&mut s,a,json!({"_":"payments.updateStarGiftPrice","stargift":input,"resell_amount":{"_":"starsAmount","amount":250,"nanos":0}}),layer).unwrap();
+        let resale = rpc(
+            &mut s,
+            b,
+            json!({"_":"payments.getResaleStarGifts","gift_id":800}),
+            layer,
+        )
+        .unwrap();
+        assert_eq!(resale["gifts"][0]["resell_amount"][0]["amount"], 250);
+        let invoice = json!({"_":"inputInvoiceStarGiftResale","slug":format!("IonGift-{id}"),"to_id":{"_":"inputPeerSelf"}});
+        let form = rpc(
+            &mut s,
+            b,
+            json!({"_":"payments.getPaymentForm","invoice":invoice}),
+            layer,
+        )
+        .unwrap();
+        rpc(
+            &mut s,
+            b,
+            json!({"_":"payments.sendStarsForm","form_id":form["form_id"],"invoice":invoice}),
+            layer,
+        )
+        .unwrap();
+        assert_eq!(s.owned[&id].owner, b);
+        assert_eq!(s.users[&a].stars, 1100);
+        assert_eq!(s.users[&b].stars, 750);
+    }
+}
+
+#[test]
+fn difference_pagination_and_channel_retention() {
+    let (mut s, a, b, _) = fixture();
+    for n in 1..=5 {
+        rpc(&mut s,a,json!({"_":"messages.sendMessage","peer":{"_":"inputPeerUser","user_id":b,"access_hash":0},"message":"page","random_id":n}),231).unwrap();
+    }
+    for layer in [229, 231] {
+        rpc(&mut s,a,json!({"_":"messages.getDialogs","offset_date":0,"offset_id":0,"offset_peer":{"_":"inputPeerEmpty"},"limit":100,"hash":0}),layer).unwrap();
+        rpc(
+            &mut s,
+            a,
+            json!({"_":"users.getFullUser","id":{"_":"inputUserSelf"}}),
+            layer,
+        )
+        .unwrap();
+    }
+    let first = rpc(
+        &mut s,
+        b,
+        json!({"_":"updates.getDifference","pts":0,"pts_limit":2,"date":0,"qts":0}),
+        231,
+    )
+    .unwrap();
+    assert_eq!(first["_"], "updates.differenceSlice");
+    assert_eq!(first["intermediate_state"]["pts"], 2);
+    let last = rpc(
+        &mut s,
+        b,
+        json!({"_":"updates.getDifference","pts":4,"pts_limit":2,"date":0,"qts":0}),
+        229,
+    )
+    .unwrap();
+    assert_eq!(last["other_updates"].as_array().unwrap().len(), 1);
+    assert_eq!(last["state"]["pts"], 5);
+    let ch = rpc(
+        &mut s,
+        a,
+        json!({"_":"channels.createChannel","title":"retention","about":"","broadcast":true}),
+        231,
+    )
+    .unwrap()["chats"][0]["id"]
+        .as_i64()
+        .unwrap();
+    rpc(&mut s,a,json!({"_":"messages.sendMessage","peer":{"_":"inputPeerChannel","channel_id":ch,"access_hash":0},"message":"post","random_id":50}),231).unwrap();
+    s.events.clear();
+    let diff=rpc(&mut s,a,json!({"_":"updates.getChannelDifference","channel":{"_":"inputChannel","channel_id":ch,"access_hash":0},"pts":1,"limit":100,"filter":{"_":"channelMessagesFilterEmpty"}}),229).unwrap();
+    assert_eq!(diff["_"], "updates.channelDifferenceTooLong");
+    assert_eq!(diff["messages"].as_array().unwrap().len(), 1);
+}

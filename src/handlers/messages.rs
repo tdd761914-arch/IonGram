@@ -111,6 +111,9 @@ fn send(s: &mut State, uid: i64, v: &Value, forward: Option<Value>) -> Result<Va
 pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
     let name = text(v, "_");
     match name {
+        "messages.getPinnedDialogs" => Ok(
+            json!({"_":"messages.peerDialogs","dialogs":[],"messages":[],"chats":[],"users":[],"state":state(s,uid)}),
+        ),
         "messages.sendMessage" | "messages.sendMedia" => send(s, uid, v, None),
         "messages.forwardMessages" => {
             let (k, id) = peer(&v["from_peer"], uid)?;
@@ -304,7 +307,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
             s.read.insert(format!("{uid}:{k}:{id}"), int(v, "max_id"));
             Ok(json!({"_":"messages.affectedMessages","pts":s.pts,"pts_count":0}))
         }
-        "messages.getDialogs" | "messages.getPeerDialogs" | "messages.getPinnedDialogs" => {
+        "messages.getDialogs" | "messages.getPeerDialogs" => {
             let mut pairs = std::collections::BTreeSet::new();
             if name == "messages.getPeerDialogs" {
                 for p in list(v, "peers") {
@@ -360,7 +363,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
             {
                 let p = json!({"_":match k.as_str(){"channel"=>"peerChannel","chat"=>"peerChat",_=>"peerUser"},match k.as_str(){"channel"=>"channel_id","chat"=>"chat_id",_=>"user_id"}:id});
                 let read = s.read.get(&format!("{uid}:{k}:{id}")).copied().unwrap_or(0);
-                let mut d = json!({"_":"dialog","peer":p,"top_message":m.map(|m|m.id).unwrap_or(0),"read_inbox_max_id":read,"read_outbox_max_id":0,"unread_count":s.messages.iter().filter(|m|visible(m,&k,id,uid)&&m.id>read&&m.from!=uid).count(),"unread_mentions_count":0,"unread_reactions_count":0,"notify_settings":{"_":"peerNotifySettings"}});
+                let mut d = json!({"_":"dialog","peer":p,"top_message":m.map(|m|m.id).unwrap_or(0),"read_inbox_max_id":read,"read_outbox_max_id":0,"unread_count":s.messages.iter().filter(|m|visible(m,&k,id,uid)&&m.id>read&&m.from!=uid).count(),"unread_mentions_count":0,"unread_reactions_count":0,"unread_poll_votes_count":0,"notify_settings":{"_":"peerNotifySettings"}});
                 if k == "channel" {
                     d["pts"] = json!(s.rooms[&id].pts)
                 }
@@ -388,29 +391,53 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         "updates.getState" => Ok(state(s, uid)),
         "updates.getDifference" => {
             let pts = int(v, "pts");
-            if pts >= s.user_pts.get(&uid).copied().unwrap_or(0) as i64 {
+            let current = s.user_pts.get(&uid).copied().unwrap_or(0);
+            ensure!(
+                pts >= 0 && pts <= current as i64,
+                "PERSISTENT_TIMESTAMP_INVALID"
+            );
+            if pts == current as i64 {
                 return Ok(json!({"_":"updates.differenceEmpty","date":now(),"seq":0}));
             }
-            if s.events
-                .iter()
-                .find(|e| e.users.contains(&uid))
-                .is_some_and(|e| pts < (e.per_user.get(&uid).copied().unwrap_or(1) - 1) as i64)
-            {
-                return Ok(
-                    json!({"_":"updates.differenceTooLong","pts":s.user_pts.get(&uid).copied().unwrap_or(0)}),
-                );
+            let retained: Vec<_> = s.events.iter().filter(|e| e.users.contains(&uid)).collect();
+            if retained.first().is_none_or(|e| {
+                pts < (e.per_user.get(&uid).copied().unwrap_or(0)
+                    - int(&e.update, "pts_count").max(1) as i32) as i64
+            }) {
+                return Ok(json!({"_":"updates.differenceTooLong","pts":current}));
             }
-            let items = s
-                .events
+            let limit = if int(v, "pts_limit") > 0 {
+                int(v, "pts_limit").min(100) as usize
+            } else {
+                100
+            };
+            let after: Vec<_> = retained
+                .into_iter()
+                .filter(|e| e.per_user.get(&uid).copied().unwrap_or(0) as i64 > pts)
+                .collect();
+            let slice = after.len() > limit;
+            let items: Vec<_> = after
                 .iter()
-                .filter(|e| {
-                    e.per_user.get(&uid).copied().unwrap_or(0) as i64 > pts
-                        && e.users.contains(&uid)
-                })
+                .take(limit)
                 .map(|e| event_view(e, uid))
-                .collect::<Vec<_>>();
+                .collect();
+            let mut st = state(s, uid);
+            if slice {
+                st["pts"] = json!(after[limit - 1].per_user[&uid]);
+            }
+            let users: Vec<_> = s
+                .users
+                .keys()
+                .filter(|u| {
+                    **u == uid
+                        || items
+                            .iter()
+                            .any(|e| int(&e["message"]["from_id"], "user_id") == **u)
+                })
+                .map(|u| s.user(*u, uid))
+                .collect();
             Ok(
-                json!({"_":"updates.difference","new_messages":[],"new_encrypted_messages":[],"other_updates":items,"users":s.users.keys().filter(|u|**u==uid||items.iter().any(|e|int(&e["message"]["from_id"],"user_id")==**u)).map(|u|s.user(*u,uid)).collect::<Vec<_>>(),"chats":s.rooms.values().filter(|r|r.members.contains_key(&uid)).map(|r|s.room(r.id,uid)).collect::<Vec<_>>(),"state":state(s,uid)}),
+                json!({"_":if slice{"updates.differenceSlice"}else{"updates.difference"},"new_messages":[],"new_encrypted_messages":[],"other_updates":items,"users":users,"chats":s.rooms.values().filter(|r|r.members.contains_key(&uid)).map(|r|s.room(r.id,uid)).collect::<Vec<_>>(),if slice{"intermediate_state"}else{"state"}:st}),
             )
         }
         "updates.getChannelDifference" => {
@@ -432,6 +459,15 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                 })
                 .take(100)
                 .collect();
+            if events
+                .first()
+                .is_none_or(|e| pts < int(&e.update, "pts") - int(&e.update, "pts_count"))
+                && r.pts > 1
+            {
+                return Ok(
+                    json!({"_":"updates.channelDifferenceTooLong","final":true,"dialog":{"_":"dialog","peer":{"_":"peerChannel","channel_id":id},"top_message":r.last,"read_inbox_max_id":s.read.get(&format!("{uid}:channel:{id}")).copied().unwrap_or(0),"read_outbox_max_id":0,"unread_count":0,"unread_mentions_count":0,"unread_reactions_count":0,"unread_poll_votes_count":0,"notify_settings":{"_":"peerNotifySettings"},"pts":r.pts},"messages":s.messages.iter().rev().filter(|m|m.kind=="channel"&&m.peer==id).take(100).map(|m|s.message(m,uid)).collect::<Vec<_>>(),"chats":[s.room(id,uid)],"users":r.members.keys().map(|u|s.user(*u,uid)).collect::<Vec<_>>()}),
+                );
+            }
             let end = events
                 .last()
                 .map(|e| int(&e.update, "pts"))
