@@ -119,6 +119,9 @@ Behavior and limitations are documented in README.md. Unsupported API methods re
 
 ## payments
 
+- `payments.getCraftStarGifts`
+- `payments.craftStarGift`
+
 - `payments.checkCanSendGift`
 - `payments.convertStarGift`
 - `payments.getPaymentForm`

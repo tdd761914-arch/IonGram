@@ -113,7 +113,7 @@ are not implemented.
 
 Unsupported methods return `METHOD_NOT_IMPLEMENTED`; they are not reported as successful.
 This version does not implement bots, calls, stories, secret chats, web transports,
-external payment providers, auctions, staking, gift crafting/collections, or full
+external payment providers, auctions, staking, gift collections, or full
 multi-DC authorization. Some channel setting handlers persist configuration
 without implementing every Telegram client-side behavior (for example slow-mode timing).
 History filtering/pagination covers the basic ID/date/text case, not every Telegram filter.
@@ -138,6 +138,28 @@ The supplied catalog has a hexagon pattern and black, red and green backgrounds.
 Upgrading selects a background according to its rarity and persists the chosen
 attributes with the owned gift. Transfers and resale preserve those attributes.
 The command also fills in styles for previously upgraded gifts lacking a background.
+
+### Hexagon crafting
+
+`payments.getCraftStarGifts` lists eligible owned gifts. `payments.craftStarGift`
+consumes exactly **three upgraded, unlisted gifts of the same collection** and
+creates one with a craft-only model, with no Stars fee and no failure chance.
+Inputs cannot be reused or refunded, and mint supply is not replenished. The
+result and consumed IDs commit atomically in SQLite; retries return the same result.
+Crafted outputs cannot be used as ingredients in this recipe.
+
+Stop the service for these administrator commands:
+
+```sh
+iongram gift-craft-model GIFT_ID assets/gifts/hexagon-crystal.tgs 'Кристалл'
+iongram gift-craft-model GIFT_ID assets/gifts/hexagon-plasma.tgs 'Плазма'
+iongram gift-craft-model GIFT_ID assets/gifts/hexagon-obsidian.tgs 'Обсидиан'
+iongram craft USER_ID OWNED_GIFT_ID_1 OWNED_GIFT_ID_2 OWNED_GIFT_ID_3
+```
+
+The inspected OwpenGram `CraftGiftSheet` is an unfinished UI; server RPC support
+does not add that screen to an installed APK. Use a client with crafting support
+or the administrator command above. TGS generators in `tools/` are original MIT assets.
 
 ## Validation
 

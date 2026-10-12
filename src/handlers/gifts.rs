@@ -29,7 +29,10 @@ pub fn assign_style(s: &mut State, id: i64) -> Result<()> {
         "starGiftAttributePattern",
         "starGiftAttributeBackdrop",
     ] {
-        let choices: Vec<_> = catalog.iter().filter(|a| text(a, "_") == kind).collect();
+        let choices: Vec<_> = catalog
+            .iter()
+            .filter(|a| text(a, "_") == kind && a["crafted"] != true)
+            .collect();
         if !choices.is_empty() {
             let total: i64 = choices.iter().map(|a| int(&a["rarity"], "permille")).sum();
             ensure!(total > 0, "GIFT_ATTRIBUTES_INVALID");
@@ -47,19 +50,25 @@ pub fn assign_style(s: &mut State, id: i64) -> Result<()> {
     s.owned_styles.insert(id, selected);
     Ok(())
 }
-fn unique(s: &State, o: &OwnedGift) -> Result<Value> {
+pub(super) fn unique(s: &State, o: &OwnedGift) -> Result<Value> {
     let g = &s.gifts[&o.gift];
     let mut value = json!({"_":"starGiftUnique","id":o.id,"gift_id":g.id,"title":g.title,"slug":format!("IonGift-{}",o.id),"num":o.id,"owner_id":{"_":"peerUser","user_id":o.owner},"attributes":s.owned_styles.get(&o.id).cloned().unwrap_or(style_catalog(s,g)?.into_iter().take(1).collect()),"availability_issued":g.sold,"availability_total":g.supply});
+    value["crafted"] = json!(s.crafted_gifts.contains_key(&o.id));
+    if super::craft::eligible(s, o) {
+        value["craft_chance_permille"] = json!(334);
+    }
     if o.resale > 0 {
         value["resell_amount"] = json!([amount(o.resale)]);
     }
     Ok(value)
 }
 
-fn saved(s: &State, o: &OwnedGift) -> Result<Value> {
-    Ok(
-        json!({"_":"savedStarGift","date":o.date,"gift":if o.upgraded{unique(s,o)?}else{gift(s,&s.gifts[&o.gift])?},"msg_id":o.id,"saved_id":o.id,"from_id":{"_":"peerUser","user_id":o.sender},"unsaved":o.hidden,"can_upgrade":!o.upgraded,"pinned_to_top":o.pinned,"convert_stars":o.price,"upgrade_stars":s.gifts[&o.gift].upgrade}),
-    )
+pub(super) fn saved(s: &State, o: &OwnedGift) -> Result<Value> {
+    let mut value = json!({"_":"savedStarGift","date":o.date,"gift":if o.upgraded{unique(s,o)?}else{gift(s,&s.gifts[&o.gift])?},"msg_id":o.id,"saved_id":o.id,"from_id":{"_":"peerUser","user_id":o.sender},"unsaved":o.hidden,"can_upgrade":!o.upgraded,"pinned_to_top":o.pinned,"convert_stars":o.price,"upgrade_stars":s.gifts[&o.gift].upgrade});
+    if super::craft::eligible(s, o) {
+        value["can_craft_at"] = json!(o.date);
+    }
+    Ok(value)
 }
 fn owned_id(v: &Value) -> i64 {
     let g = &v["stargift"];
@@ -109,6 +118,7 @@ fn price(s: &State, v: &Value, uid: i64) -> Result<i64> {
 pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
     let name = text(v, "_");
     match name {
+        "payments.getCraftStarGifts" | "payments.craftStarGift" => super::craft::handle(s, uid, v),
         "payments.getStarsStatus"
         | "payments.getStarsTransactions"
         | "payments.getStarsTransactionsByID"

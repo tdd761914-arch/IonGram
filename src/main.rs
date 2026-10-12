@@ -99,6 +99,69 @@ async fn main() -> Result<()> {
             store.save(state)?;
             println!("Gift {id} imported")
         }
+        "craft" => {
+            let uid = args
+                .get(2)
+                .context("craft USER_ID GIFT_ID GIFT_ID GIFT_ID")?
+                .parse::<i64>()?;
+            ensure!(args.len() == 6, "exactly three gift instance IDs required");
+            let ids: Vec<i64> = args[3..]
+                .iter()
+                .map(|s| s.parse())
+                .collect::<std::result::Result<_, _>>()?;
+            let mut store = server.store.lock().await;
+            let mut state = store.state.clone();
+            ensure!(state.users.contains_key(&uid), "user not found");
+            let result = iongram::handlers::craft::handle(
+                &mut state,
+                uid,
+                &json!({"_":"payments.craftStarGift","stargift":ids.iter().map(|id|json!({"_":"inputSavedStarGiftUser","msg_id":id})).collect::<Vec<_>>()}),
+            )?;
+            let id = result["updates"][0]["message"]["id"].clone();
+            store.save(state)?;
+            println!("Crafted gift {id}");
+        }
+        "gift-craft-model" => {
+            let gift_id = args
+                .get(2)
+                .context("gift-craft-model GIFT_ID MODEL.tgs NAME")?
+                .parse::<i64>()?;
+            let data = std::fs::read(args.get(3).context("model missing")?)?;
+            validate_tgs(&data)?;
+            let name = args.get(4).context("name missing")?;
+            ensure!(!name.trim().is_empty(), "empty model name");
+            let mut store = server.store.lock().await;
+            let mut state = store.state.clone();
+            ensure!(state.gifts.contains_key(&gift_id), "gift not found");
+            ensure!(
+                !state.gift_styles.get(&gift_id).is_some_and(|a| a
+                    .iter()
+                    .any(|a| a["_"] == "starGiftAttributeModel" && a["name"] == *name)),
+                "model already registered"
+            );
+            let fid = random_id();
+            state.files.insert(fid,File{id:fid,hash:random_id(),reference:random(24),size:data.len()as i64,mime:"application/x-tgsticker".into(),attrs:vec![json!({"_":"documentAttributeAnimated"}),json!({"_":"documentAttributeImageSize","w":512,"h":512}),json!({"_":"documentAttributeSticker","alt":"⬡","stickerset":{"_":"inputStickerSetEmpty"}})],owner:0,date:now()});
+            let model = json!({"_":"starGiftAttributeModel","crafted":true,"name":name,"document":state.doc(fid)?,"rarity":{"_":"starGiftAttributeRarity","permille":1000}});
+            let attrs = state.gift_styles.entry(gift_id).or_default();
+            attrs.push(model);
+            let count = attrs
+                .iter()
+                .filter(|a| a["_"] == "starGiftAttributeModel" && a["crafted"] == true)
+                .count() as i64;
+            let mut index = 0;
+            for a in attrs
+                .iter_mut()
+                .filter(|a| a["_"] == "starGiftAttributeModel" && a["crafted"] == true)
+            {
+                a["rarity"]["permille"] =
+                    json!(1000 / count + if index < 1000 % count { 1 } else { 0 });
+                index += 1;
+            }
+            std::fs::create_dir_all(dir.join("files"))?;
+            std::fs::write(dir.join("files").join(format!("{fid}.bin")), data)?;
+            store.save(state)?;
+            println!("Craft model {name} registered for gift {gift_id}");
+        }
         "gift-style" => {
             let gift_id = args
                 .get(2)

@@ -1,3 +1,4 @@
+pub mod craft;
 pub mod files;
 pub mod fragment;
 pub mod gifts;
