@@ -67,7 +67,14 @@ impl Server {
                 let frame = timeout(Duration::from_secs(180), rx.recv()).await;
                 let frame = match frame {
                     Ok(Ok(f)) => f,
-                    _ => break,
+                    Ok(Err(e)) => {
+                        tracing::debug!(error=%e,"frame read failed");
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::debug!("frame read timed out");
+                        break;
+                    }
                 };
                 if frames_tx.send((frame, rx.quick)).await.is_err() {
                     break;
@@ -88,7 +95,7 @@ impl Server {
         let mut pushes = self.events.subscribe();
         loop {
             tokio::select! {
-                        frame=frames.recv()=>{let Some((packet,quick))=frame else{return Ok(())};ensure!(packet.len()>=20,"short MTProto packet");let key_id=i64::from_le_bytes(packet[..8].try_into()?);if key_id==0{let mut r=Reader::new(&packet[8..]);let mid=r.long()?;ensure!(mid&3==0,"client msg_id");let n=r.int()?;ensure!(n>=0,"negative body length");let obj=self.schemas[1].decode(r.take(n as usize)?)?;let response=match handlers::text(&obj,"_"){
+                        frame=frames.recv()=>{let Some((packet,quick))=frame else{return Ok(())};ensure!(packet.len()>=20,"short MTProto packet");let key_id=i64::from_le_bytes(packet[..8].try_into()?);if key_id==0{let mut r=Reader::new(&packet[8..]);let mid=r.long()?;ensure!(mid&3==0,"client msg_id");let n=r.int()?;ensure!(n>=0,"negative body length");let obj=self.schemas[1].decode(r.take(n as usize)?)?;tracing::debug!(method=handlers::text(&obj,"_"),"handshake request");let response=match handlers::text(&obj,"_"){
                         "msgs_ack"=>continue,
                         "req_pq"|"req_pq_multi"=>{hs=Some(Handshake::new(obj["nonce"].clone()));hs.as_ref().unwrap().pq(&self.key)},
                         "req_DH_params"=>hs.as_mut().context("DH state missing")?.dh(&obj,&self.key,&self.schemas[1])?,
@@ -100,7 +107,7 @@ impl Server {
                         while let Some((mid,seq,body))=queue.pop_front(){processed+=1;ensure!(processed<=1024,"container limit");ensure!(seq>=0&&mid&3==0,"invalid message envelope");if session.seen.contains(&mid){continue}
             if body.len()>=4&&u32::from_le_bytes(body[..4].try_into()?)==0x73f1f8dc{let mut r=Reader::new(&body[4..]);let count=r.int()?;ensure!((0..=1024).contains(&count),"container count");for _ in 0..count{let id=r.long()?;let sq=r.int()?;let n=r.int()?;ensure!(n>=0,"container size");queue.push_back((id,sq,r.take(n as usize)?.to_vec()))}ensure!(r.pos==body.len()-4,"container trailing bytes");continue}
                         session.seen.push_back(mid);if session.seen.len()>4096{session.seen.pop_front();}
-            if seq&1==1{acks.push(mid)}let obj=match decode_request(&self.schemas,&mut session.layer,&body){Ok(v)=>v,Err(e)=>{tracing::debug!(error=%e,"TL request rejected");session.rpc(tx,&self.schemas[session.layer],mid,json!({"_":"rpc_error","error_code":400,"error_message":"INPUT_CONSTRUCTOR_INVALID"})).await?;continue}};let name=handlers::text(&obj,"_");match name{
+            if seq&1==1{acks.push(mid)}let obj=match decode_request(&self.schemas,&mut session.layer,&body){Ok(v)=>v,Err(e)=>{tracing::debug!(error=%e,"TL request rejected");session.rpc(tx,&self.schemas[session.layer],mid,json!({"_":"rpc_error","error_code":400,"error_message":"INPUT_CONSTRUCTOR_INVALID"})).await?;continue}};let name=handlers::text(&obj,"_");tracing::debug!(method=name,"RPC request");match name{
                         "msgs_ack"|"http_wait"=>continue,
                         "ping"|"ping_delay_disconnect"=>{session.send(tx,&self.schemas[session.layer],json!({"_":"pong","msg_id":mid,"ping_id":obj["ping_id"]}),false).await?;continue},
                         "get_future_salts"=>{session.send(tx,&self.schemas[session.layer],json!({"_":"future_salts","req_msg_id":mid,"now":crypto::now(),"salts":[{"_":"future_salt","valid_since":crypto::now()-300,"valid_until":crypto::now()+1800,"salt":key.salt}]}),false).await?;continue},
