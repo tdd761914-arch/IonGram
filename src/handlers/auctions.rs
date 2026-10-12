@@ -50,7 +50,7 @@ pub fn state(a: &Auction, sold: i64) -> Value {
     json!({"_":"starGiftAuctionState","version":a.version,"start_date":a.start,"end_date":end,"min_bid_amount":a.minimum,
       "bid_levels":ranked.iter().take(a.per_round as usize).enumerate().map(|(i,(_,b))|json!({"_":"auctionBidLevel","pos":i+1,"amount":b.amount,"date":b.date})).collect::<Vec<_>>(),
       "top_bidders":ranked.iter().filter(|(_,b)|!b.hidden).take(3).map(|(u,_)|*u).collect::<Vec<_>>(),
-      "next_round_at":a.start+(a.completed+1)*a.duration,"last_gift_num":sold,"gifts_left":a.per_round*a.rounds-sold,"current_round":a.completed+1,"total_rounds":a.rounds,
+      "next_round_at":a.start+(a.completed+1)*a.duration,"last_gift_num":a.acquired.values().flatten().map(|g|int(g,"gift_num")).max().unwrap_or(0),"gifts_left":a.per_round*a.rounds-sold,"current_round":a.completed+1,"total_rounds":a.rounds,
       "rounds":(1..=a.rounds).map(|n|json!({"_":"starGiftAuctionRound","num":n,"duration":a.duration})).collect::<Vec<_>>()})
 }
 pub fn user_state(a: &Auction, uid: i64) -> Value {
@@ -165,7 +165,8 @@ pub fn tick(s: &mut State, at: i64) -> Result<bool> {
                 let g = s.gifts.get_mut(gift_id).context("GIFT_NOT_FOUND")?;
                 ensure!(g.sold < g.supply, "STARGIFT_USAGE_LIMITED");
                 g.sold += 1;
-                let num = g.sold;
+                let num = a.completed * a.per_round + pos as i64 + 1;
+                s.gift_numbers.insert(id, num);
                 s.owned.insert(
                     id,
                     OwnedGift {

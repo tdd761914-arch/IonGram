@@ -7,6 +7,8 @@ use std::{collections::BTreeMap, path::Path};
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct State {
     #[serde(default)]
+    pub gift_numbers: BTreeMap<i64, i64>,
+    #[serde(default)]
     pub auctions: BTreeMap<i64, crate::handlers::auctions::Auction>,
     #[serde(default)]
     pub crafted_gifts: BTreeMap<i64, Vec<i64>>,

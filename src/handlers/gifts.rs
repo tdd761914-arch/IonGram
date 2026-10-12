@@ -29,6 +29,25 @@ fn style_catalog(s: &State, g: &Gift) -> Result<Vec<Value>> {
     Ok(attrs)
 }
 pub fn assign_style(s: &mut State, id: i64) -> Result<()> {
+    if s.owned.get(&id).is_some_and(|o| o.upgraded) && !s.gift_numbers.contains_key(&id) {
+        let collection = s.owned[&id].gift;
+        let floor = if s.auctions.contains_key(&collection) {
+            s.gifts[&collection].supply
+        } else {
+            0
+        };
+        let number = s
+            .gift_numbers
+            .iter()
+            .filter(|(id, _)| s.owned.get(id).is_some_and(|o| o.gift == collection))
+            .map(|(_, n)| *n)
+            .max()
+            .unwrap_or(0)
+            .max(floor)
+            + 1;
+        ensure!(number <= i32::MAX as i64, "STARGIFT_USAGE_LIMITED");
+        s.gift_numbers.insert(id, number);
+    }
     let o = s.owned.get(&id).context("GIFT_NOT_FOUND")?;
     if !o.upgraded || s.owned_styles.contains_key(&id) {
         return Ok(());
@@ -72,7 +91,7 @@ pub fn assign_style(s: &mut State, id: i64) -> Result<()> {
 }
 pub(super) fn unique(s: &State, o: &OwnedGift) -> Result<Value> {
     let g = &s.gifts[&o.gift];
-    let mut value = json!({"_":"starGiftUnique","id":o.id,"gift_id":g.id,"title":g.title,"slug":format!("IonGift-{}",o.id),"num":o.id,"owner_id":{"_":"peerUser","user_id":o.owner},"attributes":s.owned_styles.get(&o.id).cloned().unwrap_or(style_catalog(s,g)?.into_iter().take(1).collect()),"availability_issued":g.sold,"availability_total":g.supply});
+    let mut value = json!({"_":"starGiftUnique","id":o.id,"gift_id":g.id,"title":g.title,"slug":format!("IonGift-{}",o.id),"num":s.gift_numbers.get(&o.id).copied().context("GIFT_NUMBER_MISSING")?,"owner_id":{"_":"peerUser","user_id":o.owner},"attributes":s.owned_styles.get(&o.id).cloned().unwrap_or(style_catalog(s,g)?.into_iter().take(1).collect()),"availability_issued":g.sold,"availability_total":g.supply});
     value["crafted"] = json!(s.crafted_gifts.contains_key(&o.id));
     if super::craft::eligible(s, o) {
         value["craft_chance_permille"] = json!(334);
@@ -408,7 +427,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                     ensure!(!o.upgraded, "STARGIFT_UPGRADED");
                     s.credit(uid, o.price, "gift conversion")?;
                     s.owned.get_mut(&id).unwrap().converted = true;
-                    s.gifts.get_mut(&o.gift).unwrap().sold -= 1;
+                    // Conversion does not replenish a limited mint or reuse its number.
                     Ok(json!(true))
                 }
                 "payments.upgradeStarGift" => {
@@ -438,4 +457,113 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         }
         _ => bail!("METHOD_NOT_IMPLEMENTED"),
     }
+}
+
+/// Preserve auction slots and assign collection-local serials to legacy gifts.
+pub fn migrate_numbers(s: &mut State) -> bool {
+    let mut changed = false;
+    for (gift, a) in &mut s.auctions {
+        for (bidder, rows) in &mut a.acquired {
+            for row in rows {
+                let number = (int(row, "round") - 1) * a.per_round + int(row, "pos");
+                if row["gift_num"] != number {
+                    row["gift_num"] = json!(number);
+                    changed = true;
+                }
+                let owner = int(&row["peer"], "user_id");
+                let date = int(row, "date");
+                let candidates: Vec<_> = s
+                    .owned
+                    .values()
+                    .filter(|o| {
+                        o.gift == *gift
+                            && o.sender == *bidder
+                            && o.date == date
+                            && (o.owner == owner
+                                || s.messages
+                                    .iter()
+                                    .any(|m| m.id == o.id && m.kind == "user" && m.peer == owner))
+                    })
+                    .map(|o| o.id)
+                    .collect();
+                if candidates.len() == 1 && s.gift_numbers.get(&candidates[0]) != Some(&number) {
+                    s.gift_numbers.insert(candidates[0], number);
+                    changed = true;
+                }
+            }
+        }
+    }
+    let pending: Vec<_> = s
+        .owned
+        .values()
+        .filter(|o| o.upgraded && !s.gift_numbers.contains_key(&o.id))
+        .map(|o| (o.id, o.gift))
+        .collect();
+    for (id, gift) in pending {
+        let floor = if s.auctions.contains_key(&gift) {
+            s.gifts[&gift].supply
+        } else {
+            0
+        };
+        let next = s
+            .gift_numbers
+            .iter()
+            .filter(|(oid, _)| s.owned.get(oid).is_some_and(|o| o.gift == gift))
+            .map(|(_, n)| *n)
+            .max()
+            .unwrap_or(0)
+            .max(floor)
+            + 1;
+        s.gift_numbers.insert(id, next);
+        changed = true;
+    }
+    fn repair(v: &mut Value, numbers: &std::collections::BTreeMap<i64, i64>) -> bool {
+        let mut changed = false;
+        if v["_"] == "starGiftUnique" {
+            if let Some(n) = numbers.get(&int(v, "id")) {
+                if v["num"] != *n {
+                    v["num"] = json!(n);
+                    changed = true;
+                }
+            }
+        }
+        if let Some(a) = v.as_array_mut() {
+            for v in a {
+                changed |= repair(v, numbers);
+            }
+        } else if let Some(o) = v.as_object_mut() {
+            for v in o.values_mut() {
+                changed |= repair(v, numbers);
+            }
+        }
+        changed
+    }
+    for m in &mut s.messages {
+        if let Some(action) = &mut m.action {
+            changed |= repair(action, &s.gift_numbers);
+            if action["auction_acquired"] == true {
+                if let Some(n) = s.gift_numbers.get(&m.id) {
+                    if action["gift_num"] != *n {
+                        action["gift_num"] = json!(n);
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    for event in &mut s.events {
+        changed |= repair(&mut event.update, &s.gift_numbers);
+        let Some(m) = event.update.get_mut("message") else {
+            continue;
+        };
+        if m["action"]["auction_acquired"] == true {
+            if let Some(n) = s.gift_numbers.get(&int(m, "id")) {
+                if m["action"]["gift_num"] != *n {
+                    m["action"]["gift_num"] = json!(n);
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
 }

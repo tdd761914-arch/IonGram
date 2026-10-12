@@ -32,7 +32,7 @@ impl Server {
         let mut store = Store::open(&dir.join("iongram.sqlite"))?;
         let mut state = store.state.clone();
         let room_ids: Vec<_> = state.rooms.keys().copied().collect();
-        let mut changed = false;
+        let mut changed = handlers::gifts::migrate_numbers(&mut state);
         for id in room_ids {
             changed |= handlers::messages::creation_message(&mut state, id).is_some();
         }
