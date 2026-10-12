@@ -125,6 +125,20 @@ SQLite, and resolves login state through the permanent key. Expiry comes from
 the DH handshake; expired temporary keys are rejected and reclaimed on later
 key creation. This is basic PFS interoperability, not a full key-retention audit.
 
+### Gift patterns and backgrounds
+
+Stop the service before configuring a gift's upgrade attributes, and use the same
+`IONGRAM_DATA` directory as the server:
+
+```sh
+iongram gift-style GIFT_ID assets/gifts/hexagon-pattern.tgs assets/gifts/hexagon-backgrounds.json
+```
+
+The supplied catalog has a hexagon pattern and black, red and green backgrounds.
+Upgrading selects a background according to its rarity and persists the chosen
+attributes with the owned gift. Transfers and resale preserve those attributes.
+The command also fills in styles for previously upgraded gifts lacking a background.
+
 ## Validation
 
 ```sh

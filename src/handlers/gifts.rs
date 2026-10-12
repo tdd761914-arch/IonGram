@@ -10,9 +10,46 @@ fn gift(s: &State, g: &Gift) -> Result<Value> {
         json!({"_":"starGift","id":g.id,"title":g.title,"sticker":s.doc(g.file)?,"stars":g.price,"convert_stars":g.price,"limited":true,"availability_remains":g.supply-g.sold,"availability_total":g.supply,"upgrade_stars":g.upgrade}),
     )
 }
+fn style_catalog(s: &State, g: &Gift) -> Result<Vec<Value>> {
+    let mut attrs = vec![
+        json!({"_":"starGiftAttributeModel","name":"Original","document":s.doc(g.file)?,"rarity":{"_":"starGiftAttributeRarity","permille":1000}}),
+    ];
+    attrs.extend(s.gift_styles.get(&g.id).cloned().unwrap_or_default());
+    Ok(attrs)
+}
+pub fn assign_style(s: &mut State, id: i64) -> Result<()> {
+    let o = s.owned.get(&id).context("GIFT_NOT_FOUND")?;
+    if !o.upgraded || s.owned_styles.contains_key(&id) {
+        return Ok(());
+    }
+    let catalog = style_catalog(s, &s.gifts[&o.gift])?;
+    let mut selected = vec![];
+    for kind in [
+        "starGiftAttributeModel",
+        "starGiftAttributePattern",
+        "starGiftAttributeBackdrop",
+    ] {
+        let choices: Vec<_> = catalog.iter().filter(|a| text(a, "_") == kind).collect();
+        if !choices.is_empty() {
+            let total: i64 = choices.iter().map(|a| int(&a["rarity"], "permille")).sum();
+            ensure!(total > 0, "GIFT_ATTRIBUTES_INVALID");
+            let mut draw = random_id() % total;
+            for a in choices {
+                let weight = int(&a["rarity"], "permille");
+                if draw < weight {
+                    selected.push(a.clone());
+                    break;
+                }
+                draw -= weight;
+            }
+        }
+    }
+    s.owned_styles.insert(id, selected);
+    Ok(())
+}
 fn unique(s: &State, o: &OwnedGift) -> Result<Value> {
     let g = &s.gifts[&o.gift];
-    let mut value = json!({"_":"starGiftUnique","id":o.id,"gift_id":g.id,"title":g.title,"slug":format!("IonGift-{}",o.id),"num":o.id,"owner_id":{"_":"peerUser","user_id":o.owner},"attributes":[{"_":"starGiftAttributeModel","name":"Original","document":s.doc(g.file)?,"rarity":{"_":"starGiftAttributeRarity","permille":1000}}],"availability_issued":g.sold,"availability_total":g.supply});
+    let mut value = json!({"_":"starGiftUnique","id":o.id,"gift_id":g.id,"title":g.title,"slug":format!("IonGift-{}",o.id),"num":o.id,"owner_id":{"_":"peerUser","user_id":o.owner},"attributes":s.owned_styles.get(&o.id).cloned().unwrap_or(style_catalog(s,g)?.into_iter().take(1).collect()),"availability_issued":g.sold,"availability_total":g.supply});
     if o.resale > 0 {
         value["resell_amount"] = json!([amount(o.resale)]);
     }
@@ -149,9 +186,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         }
         "payments.getStarGiftUpgradePreview" | "payments.getStarGiftUpgradeAttributes" => {
             let g = s.gifts.get(&int(v, "gift_id")).context("GIFT_NOT_FOUND")?;
-            let attrs = vec![
-                json!({"_":"starGiftAttributeModel","name":"Original","document":s.doc(g.file)?,"rarity":{"_":"starGiftAttributeRarity","permille":1000}}),
-            ];
+            let attrs = style_catalog(s, g)?;
             if name.ends_with("Preview") {
                 Ok(
                     json!({"_":"payments.starGiftUpgradePreview","sample_attributes":attrs,"prices":[{"_":"starGiftUpgradePrice","date":now(),"upgrade_stars":g.upgrade}],"next_prices":[]}),
@@ -262,6 +297,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                             pinned: false,
                         },
                     );
+                    assign_style(s, id)?;
                 }
                 "inputInvoicePremiumGiftStars" => {
                     let (_, u) = peer(&inv["user_id"], uid)?;
@@ -344,6 +380,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                     let cost = s.gifts[&o.gift].upgrade;
                     s.credit(uid, -cost, "gift upgrade")?;
                     s.owned.get_mut(&id).unwrap().upgraded = true;
+                    assign_style(s, id)?;
                     Ok(updates(vec![], vec![], vec![]))
                 }
                 "payments.transferStarGift" => {

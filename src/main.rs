@@ -99,6 +99,85 @@ async fn main() -> Result<()> {
             store.save(state)?;
             println!("Gift {id} imported")
         }
+        "gift-style" => {
+            let gift_id = args
+                .get(2)
+                .context("gift-style GIFT_ID PATTERN.tgs BACKDROPS.json")?
+                .parse::<i64>()?;
+            let data = std::fs::read(args.get(3).context("pattern file missing")?)?;
+            validate_tgs(&data)?;
+            let backdrops: Vec<serde_json::Value> =
+                serde_json::from_slice(&std::fs::read(args.get(4).context("backdrops missing")?)?)?;
+            ensure!(
+                !backdrops.is_empty() && backdrops.len() <= 100,
+                "invalid backdrops"
+            );
+            let mut ids = std::collections::BTreeSet::new();
+            let mut total = 0;
+            for a in &backdrops {
+                ensure!(
+                    a["_"] == "starGiftAttributeBackdrop"
+                        && a["name"].as_str().is_some_and(|n| !n.is_empty()),
+                    "invalid backdrop"
+                );
+                ensure!(
+                    a["backdrop_id"]
+                        .as_i64()
+                        .is_some_and(|n| n > 0 && n <= i32::MAX as i64 && ids.insert(n)),
+                    "invalid backdrop id"
+                );
+                for color in ["center_color", "edge_color", "pattern_color", "text_color"] {
+                    ensure!(
+                        a[color]
+                            .as_i64()
+                            .is_some_and(|c| (0..=0xffffff).contains(&c)),
+                        "invalid RGB color"
+                    );
+                }
+                let rarity = a["rarity"]["permille"].as_i64().context("rarity missing")?;
+                ensure!((1..=1000).contains(&rarity), "invalid rarity");
+                total += rarity;
+                server.schemas[0].encode(a)?;
+                server.schemas[1].encode(a)?;
+            }
+            ensure!(total == 1000, "backdrop rarity must total 1000");
+            let mut store = server.store.lock().await;
+            let mut state = store.state.clone();
+            let title = state
+                .gifts
+                .get(&gift_id)
+                .context("gift not found")?
+                .title
+                .clone();
+            let fid = random_id();
+            state.files.insert(fid,File{id:fid,hash:random_id(),reference:random(24),size:data.len() as i64,mime:"application/x-tgsticker".into(),attrs:vec![json!({"_":"documentAttributeAnimated"}),json!({"_":"documentAttributeImageSize","w":512,"h":512}),json!({"_":"documentAttributeSticker","alt":"⬡","stickerset":{"_":"inputStickerSetEmpty"}})],owner:0,date:now()});
+            let mut attrs = vec![
+                json!({"_":"starGiftAttributePattern","name":title,"document":state.doc(fid)?,"rarity":{"_":"starGiftAttributeRarity","permille":1000}}),
+            ];
+            attrs.extend(backdrops);
+            state.gift_styles.insert(gift_id, attrs);
+            let owned: Vec<_> = state
+                .owned
+                .values()
+                .filter(|o| o.gift == gift_id && o.upgraded)
+                .map(|o| o.id)
+                .collect();
+            for id in owned {
+                if state
+                    .owned_styles
+                    .get(&id)
+                    .is_some_and(|a| a.iter().any(|v| v["_"] == "starGiftAttributeBackdrop"))
+                {
+                    continue;
+                }
+                state.owned_styles.remove(&id);
+                iongram::handlers::gifts::assign_style(&mut state, id)?;
+            }
+            std::fs::create_dir_all(dir.join("files"))?;
+            std::fs::write(dir.join("files").join(format!("{fid}.bin")), data)?;
+            store.save(state)?;
+            println!("Gift {gift_id}: pattern and backgrounds configured");
+        }
         "collectible" => {
             let kind = args
                 .get(2)
