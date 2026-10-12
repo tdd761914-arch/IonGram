@@ -82,6 +82,14 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                 peer(&v["peer"], uid)?.1
             };
             ensure!(target == uid, "PEER_ID_INVALID");
+            // TON uses the same RPC family but a distinct balance constructor.
+            // This server only maintains Stars; never expose its ledger as TON.
+            if v["ton"] == true {
+                return Ok(
+                    json!({"_":"payments.starsStatus","balance":{"_":"starsTonAmount","amount":0},"history":[],"chats":[],"users":[]}),
+                );
+            }
+
             let cursor = text(v, "offset").parse::<i64>().unwrap_or(i64::MAX);
             let all: Vec<_> = s
                 .ledger
