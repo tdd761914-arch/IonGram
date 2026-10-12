@@ -8,10 +8,43 @@ fn visible(m: &Message, kind: &str, id: i64, uid: i64) -> bool {
             m.peer == id
         }
 }
+pub fn history_visible(s: &State, m: &Message, uid: i64) -> bool {
+    if m.kind == "user" {
+        return m.from == uid || m.peer == uid;
+    }
+    let Some(r) = s.rooms.get(&m.peer) else {
+        return false;
+    };
+    if banned(r, uid, "view_messages") {
+        return false;
+    }
+    if m.id
+        <= r.settings
+            .get(&format!("history_min:{uid}"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    {
+        return false;
+    }
+    if super::channels::enabled(r, "channels.togglePreHistoryHidden")
+        && !super::channels::administrator(r, uid)
+    {
+        return r
+            .members
+            .get(&uid)
+            .is_some_and(|member| m.date >= member.date);
+    }
+    true
+}
 fn response(s: &State, uid: i64, kind: &str, id: i64, msgs: Vec<&Message>, count: usize) -> Value {
     json!({"_":if kind=="channel"{"messages.channelMessages"}else{"messages.messagesSlice"},"pts":s.rooms.get(&id).map(|r|r.pts).unwrap_or(s.pts),"count":count,"messages":msgs.iter().map(|m|s.message(m,uid)).collect::<Vec<_>>(),"topics":[],"chats":if kind=="user"{vec![]}else{vec![s.room(id,uid)]},"users":s.users.keys().filter(|u|msgs.iter().any(|m|m.from==**u)).map(|u|s.user(*u,uid)).collect::<Vec<_>>()})
 }
 pub fn publish(s: &mut State, uid: i64, m: &Message, edit: bool) -> Value {
+    if m.kind == "channel" && !edit && m.action.is_none() {
+        let action =
+            json!({"_":"channelAdminLogEventActionSendMessage","message":s.message(m,uid)});
+        super::channels::log_action(s, m.peer, uid, action);
+    }
     let pts = if m.kind == "channel" {
         let r = s.rooms.get_mut(&m.peer).unwrap();
         r.pts += 1;
@@ -101,6 +134,105 @@ fn send(s: &mut State, uid: i64, v: &Value, forward: Option<Value>) -> Result<Va
             vec![json!({"_":"updateMessageID","id":m.id,"random_id":random})],
         ));
     }
+    if kind != "user" {
+        let r = &s.rooms[&id];
+        if !super::channels::administrator(r, uid) {
+            let right = match text(&v["media"], "_") {
+                "inputMediaPhoto" | "messageMediaPhoto" => "send_photos",
+                "inputMediaDocument" | "messageMediaDocument" => "send_docs",
+                _ => "send_plain",
+            };
+            ensure!(
+                !banned(r, uid, right)
+                    && r.settings
+                        .get("default_banned_rights")
+                        .is_none_or(|b| b[right] != true),
+                "CHAT_SEND_MEDIA_FORBIDDEN"
+            );
+            let slow = r
+                .settings
+                .get("channels.toggleSlowMode")
+                .map(|v| int(v, "seconds"))
+                .unwrap_or(0);
+            if slow > 0 {
+                if let Some(last) =
+                    s.messages.iter().rev().find(|m| {
+                        m.kind == kind && m.peer == id && m.from == uid && m.action.is_none()
+                    })
+                {
+                    let remaining = last.date + slow - now();
+                    if remaining > 0 {
+                        bail!("SLOWMODE_WAIT_{}", remaining);
+                    }
+                }
+            }
+            if super::channels::enabled(r, "channels.toggleAntiSpam")
+                && !text(v, "message").is_empty()
+            {
+                ensure!(
+                    s.messages
+                        .iter()
+                        .rev()
+                        .filter(|m| m.kind == kind
+                            && m.peer == id
+                            && m.from == uid
+                            && m.date > now() - 60
+                            && m.text == text(v, "message"))
+                        .count()
+                        < 3,
+                    "FLOOD_WAIT_60"
+                );
+            }
+            let price = r
+                .settings
+                .get("channels.updatePaidMessagesPrice")
+                .map(|v| int(v, "send_paid_messages_stars"))
+                .unwrap_or(0);
+            let owner = r.owner;
+            if price > 0 {
+                ensure!(
+                    int(v, "allow_paid_stars") >= price,
+                    "ALLOW_PAYMENT_REQUIRED"
+                );
+                s.credit(uid, -price, "paid channel message")?;
+                s.credit(owner, price, "paid channel message income")?;
+            }
+        }
+    }
+    let send_as = if !v["send_as"].is_null() {
+        let (k, target) = peer(&v["send_as"], uid)?;
+        if k == "user" {
+            ensure!(target == uid, "SEND_AS_PEER_INVALID");
+            None
+        } else {
+            ensure!(k == "channel", "SEND_AS_PEER_INVALID");
+            admin(s, target, uid, "post_messages")?;
+            Some(json!({"_":"peerChannel","channel_id":target}))
+        }
+    } else {
+        None
+    };
+    let topic =
+        if kind == "channel" && super::channels::enabled(&s.rooms[&id], "channels.toggleForum") {
+            super::topics::ensure_general(s, id);
+            let mut top = int(&v["reply_to"], "top_msg_id");
+            if top == 0 {
+                let reply = int(&v["reply_to"], "reply_to_msg_id");
+                top = s
+                    .message_topics
+                    .get(&format!("{id}:{reply}"))
+                    .copied()
+                    .unwrap_or(1);
+            }
+            let t = super::topics::topic(s, id, top).context("TOPIC_ID_INVALID")?;
+            ensure!(
+                t["closed"] != true || super::channels::administrator(&s.rooms[&id], uid),
+                "TOPIC_CLOSED"
+            );
+            Some(top)
+        } else {
+            None
+        };
     let mid = if kind == "channel" {
         let r = s.rooms.get_mut(&id).unwrap();
         r.last += 1;
@@ -137,6 +269,19 @@ fn send(s: &mut State, uid: i64, v: &Value, forward: Option<Value>) -> Result<Va
         action: None,
         pinned: false,
     };
+    if let Some(top) = topic {
+        s.message_topics.insert(format!("{id}:{mid}"), top);
+        s.rooms
+            .get_mut(&id)
+            .unwrap()
+            .settings
+            .get_mut(&format!("topic:{top}"))
+            .unwrap()["top_message"] = json!(mid);
+    }
+    if let Some(sender) = send_as {
+        s.message_senders
+            .insert(format!("{}:{}:{}", m.kind, m.peer, m.id), sender);
+    }
     s.messages.push(m.clone());
     s.randoms.insert(token, mid);
     let mut out = publish(s, uid, &m, false);
@@ -149,6 +294,90 @@ fn send(s: &mut State, uid: i64, v: &Value, forward: Option<Value>) -> Result<Va
 pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
     let name = text(v, "_");
     match name {
+        "messages.getMessagesViews" => {
+            let (k, id) = peer(&v["peer"], uid)?;
+            ensure!(k == "channel", "CHANNEL_INVALID");
+            access(s, &k, id, uid, false)?;
+            let ids = list(v, "id");
+            ensure!(ids.len() <= 100, "INPUT_REQUEST_TOO_LONG");
+            let mut views = vec![];
+            for mid in ids {
+                let mid = mid.as_i64().context("MESSAGE_ID_INVALID")?;
+                ensure!(
+                    s.messages.iter().any(|m| m.kind == k
+                        && m.peer == id
+                        && m.id == mid
+                        && history_visible(s, m, uid)),
+                    "MESSAGE_ID_INVALID"
+                );
+                let r = s.rooms.get_mut(&id).unwrap();
+                let seen = r
+                    .settings
+                    .entry(format!("views:{mid}"))
+                    .or_insert(json!([]))
+                    .as_array_mut()
+                    .unwrap();
+                if v["increment"] == true && !seen.contains(&json!(uid)) {
+                    seen.push(json!(uid));
+                }
+                views.push(json!({"_":"messageViews","views":seen.len(),"forwards":0}));
+            }
+            Ok(
+                json!({"_":"messages.messageViews","views":views,"chats":[s.room(id,uid)],"users":[]}),
+            )
+        }
+        "messages.unpinAllMessages" => {
+            let (k, id) = peer(&v["peer"], uid)?;
+            access(s, &k, id, uid, false)?;
+            if k != "user" {
+                admin(s, id, uid, "pin_messages")?;
+            }
+            let topic = int(v, "top_msg_id");
+            let mut ids = vec![];
+            for m in &mut s.messages {
+                if visible(m, &k, id, uid)
+                    && m.pinned
+                    && (topic == 0
+                        || s.message_topics.get(&format!("{}:{}", m.peer, m.id)) == Some(&topic))
+                {
+                    m.pinned = false;
+                    ids.push(m.id);
+                }
+            }
+            let pts = if k == "channel" {
+                let r = s.rooms.get_mut(&id).unwrap();
+                if ids.contains(&r.pinned) {
+                    r.pinned = 0;
+                }
+                if !ids.is_empty() {
+                    r.pts += 1;
+                }
+                r.pts
+            } else {
+                s.user_pts.get(&uid).copied().unwrap_or(0)
+            };
+            if k == "channel" && !ids.is_empty() {
+                let users = s.rooms[&id].members.keys().copied().collect();
+                s.record(users,json!({"_":"updatePinnedChannelMessages","channel_id":id,"messages":ids,"pinned":false,"pts":pts,"pts_count":1}));
+            }
+            Ok(
+                json!({"_":"messages.affectedHistory","pts":pts,"pts_count":if ids.is_empty(){0}else{1},"offset":0}),
+            )
+        }
+        "messages.readMentions" | "messages.readReactions" => {
+            let (k, id) = peer(&v["peer"], uid)?;
+            access(s, &k, id, uid, false)?;
+            if k != "user" {
+                let last = s.rooms[&id].last;
+                s.rooms.get_mut(&id).unwrap().settings.insert(
+                    format!("{}:{uid}:{}", name, int(v, "top_msg_id")),
+                    json!(last),
+                );
+            }
+            Ok(
+                json!({"_":"messages.affectedHistory","pts":s.user_pts.get(&uid).copied().unwrap_or(0),"pts_count":0,"offset":0}),
+            )
+        }
         "messages.getPinnedDialogs" => Ok(
             json!({"_":"messages.peerDialogs","dialogs":[],"messages":[],"chats":[],"users":[],"state":state(s,uid)}),
         ),
@@ -156,6 +385,15 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         "messages.forwardMessages" => {
             let (k, id) = peer(&v["from_peer"], uid)?;
             access(s, &k, id, uid, false)?;
+            if k != "user" {
+                ensure!(
+                    !s.rooms[&id]
+                        .settings
+                        .get("noforwards")
+                        .is_some_and(|v| v == true),
+                    "CHAT_FORWARDS_RESTRICTED"
+                );
+            }
             let mids = list(v, "id");
             let randoms = list(v, "random_id");
             ensure!(
@@ -167,7 +405,11 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                 let m = s
                     .messages
                     .iter()
-                    .find(|m| m.id == mid.as_i64().unwrap_or(0) && visible(m, &k, id, uid))
+                    .find(|m| {
+                        m.id == mid.as_i64().unwrap_or(0)
+                            && visible(m, &k, id, uid)
+                            && history_visible(s, m, uid)
+                    })
                     .context("MESSAGE_ID_INVALID")?
                     .clone();
                 let req = json!({"peer":v["to_peer"],"message":m.text,"random_id":random,"media":m.media,"entities":m.entities});
@@ -213,6 +455,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                     };
                     let room = s.rooms.get(&m.peer).filter(|_| m.kind != "user");
                     allowed
+                        && history_visible(s, m, uid)
                         && m.action.is_none()
                         && (q.is_empty() || m.text.to_lowercase().contains(&q))
                         && (int(v, "min_date") == 0 || m.date >= int(v, "min_date"))
@@ -273,7 +516,11 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                 .rev()
                 .filter(|m| {
                     visible(m, &k, id, uid)
-                        && (name != "messages.getReplies" || m.reply == Some(thread))
+                        && history_visible(s, m, uid)
+                        && (name != "messages.getReplies"
+                            || m.reply == Some(thread)
+                            || s.message_topics.get(&format!("{}:{}", m.peer, m.id))
+                                == Some(&thread))
                         && (q.is_empty() || m.text.to_lowercase().contains(&q))
                         && (offset == 0 || m.id < offset)
                         && (min == 0 || m.id > min)
@@ -309,6 +556,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
             } else {
                 Some(super::files::media(s, uid, &v["media"])?)
             };
+            let previous = s.message(&s.messages[idx], uid);
             let m = &mut s.messages[idx];
             if let Some(t) = v["message"].as_str() {
                 ensure!(t.chars().count() <= 4096, "MESSAGE_TOO_LONG");
@@ -322,6 +570,10 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
             }
             m.edit = Some(now());
             let m = m.clone();
+            if k == "channel" {
+                let action = json!({"_":"channelAdminLogEventActionEditMessage","prev_message":previous,"new_message":s.message(&m,uid)});
+                super::channels::log_action(s, id, uid, action);
+            }
             Ok(publish(s, uid, &m, true))
         }
         "messages.updatePinnedMessage" => {
@@ -341,14 +593,41 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                 s.rooms.get_mut(&id).unwrap().pinned = if m.pinned { mid } else { 0 }
             }
             let m = m.clone();
-            Ok(publish(s, uid, &m, true))
+            if k == "channel" {
+                let r = s.rooms.get_mut(&id).unwrap();
+                r.pts += 1;
+                let update = json!({"_":"updatePinnedChannelMessages","channel_id":id,"messages":[mid],"pinned":v["unpin"]!=true,"pts":r.pts,"pts_count":1});
+                let users = r.members.keys().copied().collect();
+                s.record(users, update.clone());
+                Ok(updates(vec![s.room(id, uid)], vec![], vec![update]))
+            } else {
+                Ok(publish(s, uid, &m, true))
+            }
         }
         "messages.deleteMessages" | "channels.deleteMessages" => {
             let ids: Vec<i64> = list(v, "id").iter().filter_map(Value::as_i64).collect();
             ensure!(ids.len() <= 100, "INPUT_REQUEST_TOO_LONG");
             let channel = int(&v["channel"], "channel_id");
             if channel != 0 {
-                admin(s, channel, uid, "delete_messages")?
+                access(s, "channel", channel, uid, false)?;
+                let may_delete = admin(s, channel, uid, "delete_messages").is_ok();
+                ensure!(
+                    s.messages
+                        .iter()
+                        .filter(|m| m.kind == "channel" && m.peer == channel && ids.contains(&m.id))
+                        .all(|m| may_delete || m.from == uid),
+                    "MESSAGE_DELETE_FORBIDDEN"
+                );
+                let deleted: Vec<_> = s
+                    .messages
+                    .iter()
+                    .filter(|m| m.kind == "channel" && m.peer == channel && ids.contains(&m.id))
+                    .cloned()
+                    .collect();
+                for m in deleted {
+                    let action = json!({"_":"channelAdminLogEventActionDeleteMessage","message":s.message(&m,uid)});
+                    super::channels::log_action(s, channel, uid, action);
+                }
             }
             let mut recipients = vec![uid];
             let before = s.messages.len();
@@ -395,19 +674,50 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                 peer(&v["peer"], uid)?
             };
             access(s, &k, id, uid, false)?;
-            if k != "user" {
-                admin(s, id, uid, "delete_messages")?
-            }
-            let max = int(v, "max_id");
-            s.messages
-                .retain(|m| !(visible(m, &k, id, uid) && (max == 0 || m.id <= max)));
-            s.pts += 1;
-            if name.starts_with("channels") {
-                Ok(updates(vec![s.room(id, uid)], vec![], vec![]))
+            let max = if int(v, "max_id") == 0 {
+                s.rooms.get(&id).map(|r| r.last).unwrap_or(i64::MAX)
             } else {
+                int(v, "max_id")
+            };
+            if k == "channel" && v["for_everyone"] != true {
+                let room = s.rooms.get_mut(&id).unwrap();
+                let key = format!("history_min:{uid}");
+                let old = room.settings.get(&key).and_then(Value::as_i64).unwrap_or(0);
+                room.settings.insert(key, json!(max.max(old)));
+                s.record(vec![uid], json!({"_":"updateChannel","channel_id":id}));
+                return Ok(updates(
+                    vec![s.room(id, uid)],
+                    vec![],
+                    vec![json!({"_":"updateChannel","channel_id":id})],
+                ));
+            }
+            if k != "user" {
+                admin(s, id, uid, "delete_messages")?;
+            }
+            let ids: Vec<_> = s
+                .messages
+                .iter()
+                .filter(|m| visible(m, &k, id, uid) && m.id <= max)
+                .map(|m| m.id)
+                .collect();
+            s.messages
+                .retain(|m| !(visible(m, &k, id, uid) && m.id <= max));
+            if k == "channel" {
+                let r = s.rooms.get_mut(&id).unwrap();
+                r.pts += 1;
+                if ids.contains(&r.pinned) {
+                    r.pinned = 0;
+                }
+                let update = json!({"_":"updateDeleteChannelMessages","channel_id":id,"messages":ids,"pts":r.pts,"pts_count":1});
+                let recipients = r.members.keys().copied().collect();
+                s.record(recipients, update.clone());
+                Ok(updates(vec![s.room(id, uid)], vec![], vec![update]))
+            } else {
+                s.pts += 1;
                 Ok(json!({"_":"messages.affectedHistory","pts":s.pts,"pts_count":1,"offset":0}))
             }
         }
+
         "messages.readHistory" => {
             let (k, id) = peer(&v["peer"], uid)?;
             access(s, &k, id, uid, false)?;
@@ -452,7 +762,11 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
             let mut rows: Vec<_> = pairs
                 .into_iter()
                 .map(|(k, id)| {
-                    let m = s.messages.iter().rev().find(|m| visible(m, &k, id, uid));
+                    let m = s
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| visible(m, &k, id, uid) && history_visible(s, m, uid));
                     (k, id, m)
                 })
                 .collect();
@@ -576,7 +890,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                 && r.pts > 1
             {
                 return Ok(
-                    json!({"_":"updates.channelDifferenceTooLong","final":true,"dialog":{"_":"dialog","peer":{"_":"peerChannel","channel_id":id},"top_message":r.last,"read_inbox_max_id":s.read.get(&format!("{uid}:channel:{id}")).copied().unwrap_or(0),"read_outbox_max_id":0,"unread_count":0,"unread_mentions_count":0,"unread_reactions_count":0,"unread_poll_votes_count":0,"notify_settings":{"_":"peerNotifySettings"},"pts":r.pts},"messages":s.messages.iter().rev().filter(|m|m.kind=="channel"&&m.peer==id).take(100).map(|m|s.message(m,uid)).collect::<Vec<_>>(),"chats":[s.room(id,uid)],"users":r.members.keys().map(|u|s.user(*u,uid)).collect::<Vec<_>>()}),
+                    json!({"_":"updates.channelDifferenceTooLong","final":true,"dialog":{"_":"dialog","peer":{"_":"peerChannel","channel_id":id},"top_message":r.last,"read_inbox_max_id":s.read.get(&format!("{uid}:channel:{id}")).copied().unwrap_or(0),"read_outbox_max_id":0,"unread_count":0,"unread_mentions_count":0,"unread_reactions_count":0,"unread_poll_votes_count":0,"notify_settings":{"_":"peerNotifySettings"},"pts":r.pts},"messages":s.messages.iter().rev().filter(|m|m.kind=="channel"&&m.peer==id&&history_visible(s,m,uid)).take(100).map(|m|s.message(m,uid)).collect::<Vec<_>>(),"chats":[s.room(id,uid)],"users":r.members.keys().map(|u|s.user(*u,uid)).collect::<Vec<_>>()}),
                 );
             }
             let end = events

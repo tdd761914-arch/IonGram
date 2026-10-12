@@ -114,8 +114,12 @@ are not implemented.
 Unsupported methods return `METHOD_NOT_IMPLEMENTED`; they are not reported as successful.
 This version does not implement bots, calls, stories, secret chats, web transports,
 external payment providers, staking, gift collections, or full
-multi-DC authorization. Some channel setting handlers persist configuration
-without implementing every Telegram client-side behavior (for example slow-mode timing).
+multi-DC authorization. Channel configuration, membership, permissions, photos, admin logs, forums, slow mode,
+paid messages and history restrictions persist in SQLite. Sticker set attachment
+currently accepts only removal (`inputStickerSetEmpty`); no sticker-set catalog is
+installed. Video avatars, external translation providers, boosts billing and
+Telegram advertising are not implemented. Channel ownership transfer is limited
+to accounts without a configured SRP password.
 History filtering/pagination covers the basic ID/date/text case, not every Telegram filter.
 The TCP server and key exchange are experimental and have not undergone a security audit.
 
@@ -149,7 +153,8 @@ of ingredient count. No Stars fee is charged. Ingredients are consumed on succes
 and failure; the rare failure returns `updateStarGiftCraftFail`.
 Inputs cannot be reused or refunded, and mint supply is not replenished. The
 result and consumed IDs commit atomically in SQLite; retries return the same result.
-Crafted outputs cannot be used as ingredients in this recipe.
+Crafted outputs cannot be used as ingredients in this recipe. The result inherits
+the number of the first selected ingredient; other consumed numbers are retired.
 
 Stop the service for these administrator commands:
 

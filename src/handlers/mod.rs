@@ -1,10 +1,12 @@
 pub mod auctions;
+pub mod channels;
 pub mod craft;
 pub mod files;
 pub mod fragment;
 pub mod gifts;
 pub mod messages;
 pub mod rooms;
+pub mod topics;
 pub mod users;
 use crate::{crypto::now, store::State, tl::Schema};
 use anyhow::{Context, Result, bail, ensure};
@@ -42,13 +44,25 @@ pub fn access(s: &State, kind: &str, id: i64, uid: i64, write: bool) -> Result<(
     ensure!(!banned(r, uid, "view_messages"), "CHANNEL_PRIVATE");
     let member = r.members.get(&uid);
     ensure!(
-        member.is_some() || (!write && !r.username.is_empty()),
+        member.is_some() || (!write && channels::public(s, r)),
         "CHANNEL_PRIVATE"
     );
     if write {
         ensure!(!banned(r, uid, "send_messages"), "CHAT_WRITE_FORBIDDEN");
         let m = member.context("CHAT_WRITE_FORBIDDEN")?;
-        ensure!(m.banned["send_messages"] != true, "CHAT_WRITE_FORBIDDEN");
+        let is_admin = r.owner == uid
+            || m.rights
+                .as_object()
+                .is_some_and(|a| a.values().any(|v| v == true));
+        if !is_admin {
+            ensure!(
+                !channels::enabled(r, "channels.convertToGigagroup"),
+                "CHAT_WRITE_FORBIDDEN"
+            );
+            if let Some(default) = r.settings.get("default_banned_rights") {
+                ensure!(default["send_messages"] != true, "CHAT_WRITE_FORBIDDEN");
+            }
+        }
         if r.channel && !r.mega {
             ensure!(
                 r.owner == uid || m.rights["post_messages"] == true,
@@ -96,6 +110,9 @@ pub fn dispatch(
         return users::handle(s, uid, key, v, schema);
     }
     ensure!(uid > 0, "AUTH_KEY_UNREGISTERED");
+    if topics::METHODS.contains(&name) {
+        return topics::handle(s, uid, v);
+    }
     if name.starts_with("upload.") {
         return files::handle(s, uid, v, dir);
     }
@@ -103,8 +120,60 @@ pub fn dispatch(
         return gifts::handle(s, uid, v);
     }
     if name.starts_with("channels.") || rooms::METHODS.contains(&name) {
+        if v["channel"]["_"] == "inputChannel" {
+            let room = s
+                .rooms
+                .get(&int(&v["channel"], "channel_id"))
+                .context("CHANNEL_INVALID")?;
+            ensure!(
+                room.hash == int(&v["channel"], "access_hash"),
+                "CHANNEL_INVALID"
+            );
+        }
         let before = s.rooms.clone();
-        let response = rooms::handle(s, uid, v)?;
+        let mut request = v.clone();
+        if matches!(name, "channels.editPhoto" | "messages.editChatPhoto") {
+            let channel = if name.starts_with("channels") {
+                int(&v["channel"], "channel_id")
+            } else {
+                int(v, "chat_id")
+            };
+            admin(s, channel, uid, "change_info")?;
+            request["photo"] = match text(&v["photo"], "_") {
+                "inputChatPhotoEmpty" => json!({"_":"photoEmpty","id":0}),
+                "inputChatPhoto" => files::media(
+                    s,
+                    uid,
+                    &json!({"_":"inputMediaPhoto","id":v["photo"]["id"]}),
+                )?["photo"]
+                    .clone(),
+                "inputChatUploadedPhoto" => {
+                    ensure!(
+                        v["photo"]["video"].is_null() && v["photo"]["video_emoji_markup"].is_null(),
+                        "PHOTO_VIDEO_NOT_SUPPORTED"
+                    );
+                    let media = files::materialize(
+                        s,
+                        uid,
+                        &json!({"_":"inputMediaUploadedPhoto","file":v["photo"]["file"]}),
+                        dir,
+                    )?;
+                    files::media(s, uid, &media)?["photo"].clone()
+                }
+                _ => bail!("PHOTO_INVALID"),
+            };
+        }
+        let response = rooms::handle(s, uid, &request)?;
+        let changed_rooms: Vec<_> = s
+            .rooms
+            .iter()
+            .filter_map(|(id, r)| before.get(id).map(|old| (old.clone(), r.clone())))
+            .collect();
+        for (old, new) in changed_rooms {
+            if new.channel {
+                channels::audit(s, uid, &old, &new);
+            }
+        }
         let mut events = vec![];
         for (id, r) in &s.rooms {
             if before

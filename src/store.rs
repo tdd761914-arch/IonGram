@@ -7,9 +7,19 @@ use std::{collections::BTreeMap, path::Path};
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct State {
     #[serde(default)]
+    pub deleted_rooms: BTreeMap<i64, Room>,
+    #[serde(default)]
+    pub message_topics: BTreeMap<String, i64>,
+    #[serde(default)]
     pub gift_numbers: BTreeMap<i64, i64>,
     #[serde(default)]
+    pub message_senders: BTreeMap<String, Value>,
+    #[serde(default)]
     pub auctions: BTreeMap<i64, crate::handlers::auctions::Auction>,
+    #[serde(default)]
+    pub channel_logs: BTreeMap<i64, Vec<Value>>,
+    #[serde(default)]
+    pub channel_reports: BTreeMap<i64, Vec<Value>>,
     #[serde(default)]
     pub crafted_gifts: BTreeMap<i64, Vec<i64>>,
     #[serde(default)]
@@ -306,10 +316,38 @@ if self.aliases.values().any(|a|a.kind=="user"&&a.owner==id){v.as_object_mut().u
     }
     pub fn room(&self, id: i64, viewer: i64) -> Value {
         let Some(r) = self.rooms.get(&id) else {
+            if let Some(r) = self.deleted_rooms.get(&id) {
+                return json!({"_":"channelForbidden","id":id,"access_hash":r.hash,"title":r.title,"broadcast":!r.mega,"megagroup":r.mega});
+            }
             return json!({"_":"chatEmpty","id":id});
         };
         let mut v = json!({"_":if r.channel{"channel"}else{"chat"},"id":id,"title":r.title,"photo":{"_":"chatPhotoEmpty"},"date":r.date,"creator":r.owner==viewer,"left":!r.members.contains_key(&viewer),"participants_count":r.members.len()});
+        if let Some(photo) = r.settings.get("photo").filter(|p| p["_"] == "photo") {
+            v["photo"] = json!({"_":"chatPhoto","photo_id":photo["id"],"dc_id":2});
+        }
+        v["noforwards"] = json!(r.settings.get("noforwards").is_some_and(|v| v == true));
+        if let Some(m) = r.members.get(&viewer) {
+            if m.rights
+                .as_object()
+                .is_some_and(|a| a.values().any(|v| v == true))
+            {
+                v["admin_rights"] = m.rights.clone();
+            }
+            if !m.rank.is_empty() {
+                v["rank"] = json!(m.rank);
+            }
+        }
+        if let Some(b) = r.bans.get(&viewer).filter(|b| {
+            b["until_date"].as_i64().unwrap_or(0) == 0
+                || b["until_date"].as_i64().unwrap_or(0) > now()
+        }) {
+            v["banned_rights"] = b.clone();
+        }
+        if let Some(b) = r.settings.get("default_banned_rights") {
+            v["default_banned_rights"] = b.clone();
+        }
         if r.channel {
+            crate::handlers::channels::project_room(r, &mut v);
             v["access_hash"] = json!(r.hash);
             v["broadcast"] = json!(!r.mega);
             v["megagroup"] = json!(r.mega);
@@ -343,6 +381,22 @@ if self.aliases.values().any(|a|a.kind=="user"&&a.owner==id){v.as_object_mut().u
             json!({"_":if m.kind=="channel"{"peerChannel"}else{"peerChat"},if m.kind=="channel"{"channel_id"}else{"chat_id"}:m.peer})
         };
         let mut v = json!({"_":if m.action.is_some(){"messageService"}else{"message"},"id":m.id,"out":m.from==viewer,"from_id":{"_":"peerUser","user_id":m.from},"peer_id":peer,"date":m.date,"message":m.text,"entities":m.entities,"pinned":m.pinned});
+        if m.action.is_none() {
+            if let Some(sender) = self
+                .message_senders
+                .get(&format!("{}:{}:{}", m.kind, m.peer, m.id))
+            {
+                v["from_id"] = sender.clone();
+            } else if m.kind == "channel" && self.rooms.get(&m.peer).is_some_and(|r| !r.mega) {
+                v["from_id"] = json!({"_":"peerChannel","channel_id":m.peer});
+                if self.rooms[&m.peer].signatures {
+                    if let Some(author) = self.users.get(&m.from) {
+                        v["post_author"] =
+                            json!(format!("{} {}", author.first, author.last).trim());
+                    }
+                }
+            }
+        }
         if let Some(a) = &m.action {
             v["action"] = a.clone()
         }
@@ -352,6 +406,18 @@ if self.aliases.values().any(|a|a.kind=="user"&&a.owner==id){v.as_object_mut().u
         if let Some(a) = m.reply {
             v["reply_to"] = json!({"_":"messageReplyHeader","reply_to_msg_id":a})
         }
+        if let Some(topic) = self
+            .message_topics
+            .get(&format!("{}:{}", m.peer, m.id))
+            .filter(|_| m.kind == "channel")
+        {
+            if m.action
+                .as_ref()
+                .is_none_or(|a| a["_"] != "messageActionTopicCreate")
+            {
+                v["reply_to"] = json!({"_":"messageReplyHeader","forum_topic":true,"reply_to_msg_id":m.reply.unwrap_or(*topic),"reply_to_top_id":topic});
+            }
+        }
         if let Some(a) = &m.forward {
             v["fwd_from"] = a.clone()
         }
@@ -359,7 +425,17 @@ if self.aliases.values().any(|a|a.kind=="user"&&a.owner==id){v.as_object_mut().u
             v["edit_date"] = json!(a)
         }
         if m.kind == "channel" && self.rooms.get(&m.peer).is_some_and(|r| !r.mega) {
-            v["post"] = json!(true)
+            v["post"] = json!(true);
+            if m.action.is_none() {
+                v["views"] = json!(
+                    self.rooms[&m.peer]
+                        .settings
+                        .get(&format!("views:{}", m.id))
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len)
+                );
+                v["forwards"] = json!(0);
+            }
         }
         v
     }

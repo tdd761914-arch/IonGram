@@ -77,6 +77,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         ensure!(id > 0 && !ids.contains(&id), "STARGIFT_INVALID");
         ids.push(id);
     }
+    let first = ids[0];
     ids.sort_unstable();
     let token = format!(
         "{uid}:{}",
@@ -97,6 +98,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         }
         ensure!(gift == o.gift, "STARGIFT_COLLECTION_MISMATCH");
     }
+    let inherited_number = *s.gift_numbers.get(&first).context("GIFT_NUMBER_MISSING")?;
     let models: Vec<_> = s.gift_styles[&gift]
         .iter()
         .filter(|a| a["_"] == "starGiftAttributeModel" && a["crafted"] == true)
@@ -132,6 +134,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
             pinned: false,
         },
     );
+    s.gift_numbers.insert(id, inherited_number);
     super::gifts::assign_style(s, id)?;
     let attrs = s
         .owned_styles
@@ -146,6 +149,9 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         o.pinned = false;
     }
     // Inputs are consumed, not refunded; the collection's mint supply is not replenished.
+    // Retain selection order for the inherited number while keeping the replay key sorted.
+    ids.retain(|input| *input != first);
+    ids.insert(0, first);
     s.crafted_gifts.insert(id, ids);
     s.craft_receipts.insert(token, id);
     let action = json!({"_":"messageActionStarGiftUnique","craft":true,"gift":super::gifts::unique(s,&s.owned[&id])?,"from_id":{"_":"peerUser","user_id":uid},"peer":{"_":"peerUser","user_id":uid},"saved_id":id});
