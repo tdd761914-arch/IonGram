@@ -105,6 +105,8 @@ pub struct Message {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Invite {
+    #[serde(default)]
+    pub permanent: bool,
     pub room: i64,
     pub creator: i64,
     pub date: i64,

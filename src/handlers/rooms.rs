@@ -32,7 +32,7 @@ fn changed(s: &State, id: i64, uid: i64) -> Value {
     updates(vec![s.room(id, uid)], vec![], vec![])
 }
 fn invite(hash: &str, i: &Invite) -> Value {
-    let mut v = json!({"_":"chatInviteExported","link":format!("https://iongram.local/+{hash}"),"admin_id":i.creator,"date":i.date,"revoked":i.revoked,"request_needed":i.request,"usage":i.used});
+    let mut v = json!({"_":"chatInviteExported","link":format!("https://iongram.local/+{hash}"),"admin_id":i.creator,"date":i.date,"revoked":i.revoked,"permanent":i.permanent,"request_needed":i.request,"usage":i.used});
     if i.expires > 0 {
         v["expire_date"] = json!(i.expires)
     }
@@ -40,6 +40,31 @@ fn invite(hash: &str, i: &Invite) -> Value {
         v["usage_limit"] = json!(i.limit)
     }
     v
+}
+fn permanent_invite(s: &mut State, room: i64, creator: i64) -> Value {
+    if let Some((hash, entry)) = s
+        .invites
+        .iter()
+        .find(|(_, i)| i.room == room && i.creator == creator && i.permanent && !i.revoked)
+    {
+        return invite(hash, entry);
+    }
+    let hash = hex::encode(random(24));
+    let entry = Invite {
+        permanent: true,
+        room,
+        creator,
+        date: now(),
+        expires: 0,
+        limit: 0,
+        used: 0,
+        revoked: false,
+        request: false,
+        pending: vec![],
+    };
+    let result = invite(&hash, &entry);
+    s.invites.insert(hash, entry);
+    result
 }
 fn participant(r: &Room, id: i64) -> Value {
     let m = &r.members[&id];
@@ -95,6 +120,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                     settings: Default::default(),
                 },
             );
+            permanent_invite(s, id, uid);
             let u = changed(s, id, uid);
             if channel {
                 Ok(u)
@@ -207,6 +233,9 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                     } else {
                         json!({"_":"chatFull","id":id,"about":r.about,"participants":{"_":"chatParticipants","chat_id":id,"version":1,"participants":r.members.keys().map(|u|if *u==r.owner{json!({"_":"chatParticipantCreator","user_id":u})}else{json!({"_":"chatParticipant","user_id":u,"inviter_id":r.owner,"date":r.date})}).collect::<Vec<_>>()},"notify_settings":{"_":"peerNotifySettings"}})
                     };
+                    if admin(s, id, uid, "invite_users").is_ok() {
+                        f["exported_invite"] = permanent_invite(s, id, uid);
+                    }
                     if r.pinned > 0 {
                         f["pinned_msg_id"] = json!(r.pinned)
                     }
@@ -413,6 +442,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                     );
                     let hash = hex::encode(random(24));
                     let i = Invite {
+                        permanent: false,
                         room: id,
                         creator: uid,
                         date: now(),
@@ -429,14 +459,28 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                 }
                 "messages.getExportedChatInvites" => {
                     admin(s, id, uid, "invite_users")?;
-                    let inv: Vec<_> = s
+                    let (_, creator) = peer(&v["admin_id"], uid)?;
+                    if creator != uid {
+                        ensure!(r.owner == uid, "CHAT_ADMIN_REQUIRED");
+                    }
+                    if v["revoked"] != true {
+                        permanent_invite(s, id, creator);
+                    }
+                    let mut inv: Vec<_> = s
                         .invites
                         .iter()
-                        .filter(|(_, i)| i.room == id && i.revoked == (v["revoked"] == true))
+                        .filter(|(_, i)| {
+                            i.room == id
+                                && i.creator == creator
+                                && i.revoked == (v["revoked"] == true)
+                        })
                         .map(|(h, i)| invite(h, i))
                         .collect();
+                    inv.sort_by_key(|i| (i["permanent"] != true, -int(i, "date")));
+                    let count = inv.len();
+                    inv.truncate(int(v, "limit").clamp(1, 100) as usize);
                     Ok(
-                        json!({"_":"messages.exportedChatInvites","count":inv.len(),"invites":inv,"users":[]}),
+                        json!({"_":"messages.exportedChatInvites","count":count,"invites":inv,"users":[s.user(creator,uid)]}),
                     )
                 }
                 "messages.editExportedChatInvite" | "messages.deleteExportedChatInvite" => {

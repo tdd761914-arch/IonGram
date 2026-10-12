@@ -104,6 +104,11 @@ impl Schema {
         )?;
         s.parse(include_str!("../schema/mtproto.tl"), true)?;
         s.parse("rpc_result#f35c6d01 req_msg_id:long result:Object = RpcResult;\ngzip_packed#3072cfa1 packed_data:bytes = Object;",false)?;
+        // Android still sends these older method constructors at API layer 229.
+        // Keep canonical outgoing constructors while accepting the older wire layouts.
+        let canonical_names = s.names.clone();
+        s.parse("messages.createChat#0034a818 flags:# users:Vector<InputUser> title:string ttl_period:flags.0?int = messages.InvitedUsers;\nupdates.getDifference#25939651 flags:# pts:int pts_total_limit:flags.0?int date:int qts:int = updates.Difference;", false)?;
+        s.names = canonical_names;
         Ok(s)
     }
     fn parse(&mut self, src: &str, core: bool) -> Result<()> {
