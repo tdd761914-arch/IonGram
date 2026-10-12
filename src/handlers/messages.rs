@@ -37,6 +37,44 @@ pub fn publish(s: &mut State, uid: i64, m: &Message, edit: bool) -> Value {
         vec![update],
     )
 }
+pub fn creation_message(s: &mut State, room_id: i64) -> Option<Value> {
+    let r = s.rooms.get(&room_id)?.clone();
+    if r.last != 0
+        || s.messages
+            .iter()
+            .any(|m| m.peer == room_id && m.kind != "user")
+    {
+        return None;
+    }
+    let id = if r.channel { 1 } else { s.id() };
+    s.rooms.get_mut(&room_id)?.last = id;
+    let action = if r.channel {
+        json!({"_":"messageActionChannelCreate","title":r.title})
+    } else {
+        json!({"_":"messageActionChatCreate","title":r.title,"users":r.members.keys().copied().collect::<Vec<_>>()})
+    };
+    let message = Message {
+        id,
+        from: r.owner,
+        kind: if r.channel {
+            "channel".into()
+        } else {
+            "chat".into()
+        },
+        peer: room_id,
+        date: r.date,
+        text: String::new(),
+        media: None,
+        entities: vec![],
+        reply: None,
+        forward: None,
+        edit: None,
+        action: Some(action),
+        pinned: false,
+    };
+    s.messages.push(message.clone());
+    Some(publish(s, r.owner, &message, false))
+}
 fn send(s: &mut State, uid: i64, v: &Value, forward: Option<Value>) -> Result<Value> {
     let (kind, id) = peer(&v["peer"], uid)?;
     access(s, &kind, id, uid, true)?;
@@ -151,6 +189,75 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
             Ok(out)
         }
         "messages.uploadMedia" => super::files::media(s, uid, &v["media"]),
+        "messages.searchGlobal" => {
+            ensure!(v["community"].is_null(), "COMMUNITY_INVALID");
+            ensure!(int(v, "folder_id") == 0, "FOLDER_ID_INVALID");
+            ensure!(
+                matches!(text(&v["filter"], "_"), "" | "inputMessagesFilterEmpty"),
+                "SEARCH_FILTER_NOT_SUPPORTED"
+            );
+            let q = text(v, "q").trim().to_lowercase();
+            let offset = peer(&v["offset_peer"], uid).ok();
+            let rate = int(v, "offset_rate");
+            let offset_id = int(v, "offset_id");
+            let mut all: Vec<_> = s
+                .messages
+                .iter()
+                .filter(|m| {
+                    let allowed = if m.kind == "user" {
+                        m.from == uid || m.peer == uid
+                    } else {
+                        s.rooms.get(&m.peer).is_some_and(|r| {
+                            r.members.contains_key(&uid) && !banned(r, uid, "view_messages")
+                        })
+                    };
+                    let room = s.rooms.get(&m.peer).filter(|_| m.kind != "user");
+                    allowed
+                        && m.action.is_none()
+                        && (q.is_empty() || m.text.to_lowercase().contains(&q))
+                        && (int(v, "min_date") == 0 || m.date >= int(v, "min_date"))
+                        && (int(v, "max_date") == 0 || m.date <= int(v, "max_date"))
+                        && (v["users_only"] != true || m.kind == "user")
+                        && (v["broadcasts_only"] != true
+                            || room.is_some_and(|r| r.channel && !r.mega))
+                        && (v["groups_only"] != true || room.is_some_and(|r| !r.channel || r.mega))
+                })
+                .collect();
+            all.sort_by_key(|m| std::cmp::Reverse((m.date, m.id, m.peer)));
+            let count = all.len();
+            if let Some((kind, id)) = offset {
+                if let Some(index) = all
+                    .iter()
+                    .position(|m| m.id == offset_id && visible(m, &kind, id, uid))
+                {
+                    all.drain(..=index);
+                } else if rate > 0 {
+                    all.retain(|m| m.date < rate);
+                }
+            } else if rate > 0 {
+                all.retain(|m| m.date < rate);
+            }
+            let limit = int(v, "limit").clamp(1, 100) as usize;
+            let more = all.len() > limit;
+            all.truncate(limit);
+            let mut user_ids = std::collections::BTreeSet::from([uid]);
+            let mut room_ids = std::collections::BTreeSet::new();
+            for m in &all {
+                user_ids.insert(m.from);
+                if m.kind == "user" {
+                    user_ids.insert(m.peer);
+                } else {
+                    room_ids.insert(m.peer);
+                }
+            }
+            let mut out = json!({"_":"messages.messagesSlice","count":count,"messages":all.iter().map(|m|s.message(m,uid)).collect::<Vec<_>>(),"chats":room_ids.iter().map(|id|s.room(*id,uid)).collect::<Vec<_>>(),"users":user_ids.iter().map(|id|s.user(*id,uid)).collect::<Vec<_>>(),"topics":[]});
+            if more {
+                if let Some(m) = all.last() {
+                    out["next_rate"] = json!(m.date);
+                }
+            }
+            Ok(out)
+        }
         "messages.getHistory" | "messages.search" | "messages.getReplies" => {
             let (k, id) = peer(&v["peer"], uid)?;
             access(s, &k, id, uid, false)?;
@@ -359,7 +466,11 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                 .filter(|(_, _, m)| {
                     int(v, "offset_date") == 0 || m.is_none_or(|m| m.date < int(v, "offset_date"))
                 })
-                .take(int(v, "limit").clamp(1, 100) as usize)
+                .take(if name == "messages.getPeerDialogs" {
+                    100
+                } else {
+                    int(v, "limit").clamp(1, 100) as usize
+                })
             {
                 let p = json!({"_":match k.as_str(){"channel"=>"peerChannel","chat"=>"peerChat",_=>"peerUser"},match k.as_str(){"channel"=>"channel_id","chat"=>"chat_id",_=>"user_id"}:id});
                 let read = s.read.get(&format!("{uid}:{k}:{id}")).copied().unwrap_or(0);

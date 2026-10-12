@@ -121,7 +121,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
                 },
             );
             permanent_invite(s, id, uid);
-            let u = changed(s, id, uid);
+            let u = super::messages::creation_message(s, id).unwrap_or_else(|| changed(s, id, uid));
             if channel {
                 Ok(u)
             } else {

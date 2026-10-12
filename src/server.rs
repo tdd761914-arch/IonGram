@@ -29,7 +29,16 @@ impl Server {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
         }
         let key = ServerKey::load(&dir)?;
-        let store = Store::open(&dir.join("iongram.sqlite"))?;
+        let mut store = Store::open(&dir.join("iongram.sqlite"))?;
+        let mut state = store.state.clone();
+        let room_ids: Vec<_> = state.rooms.keys().copied().collect();
+        let mut changed = false;
+        for id in room_ids {
+            changed |= handlers::messages::creation_message(&mut state, id).is_some();
+        }
+        if changed {
+            store.save(state)?;
+        }
         let (events, _) = broadcast::channel(1024);
         Ok(Arc::new(Self {
             store: Mutex::new(store),

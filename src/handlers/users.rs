@@ -201,21 +201,74 @@ pub fn handle(s: &mut State, uid: i64, key: i64, v: &Value, schema: &Schema) -> 
                     bail!("USERNAME_NOT_OCCUPIED")
                 }
                 "contacts.search" => {
-                    let q = text(v, "q").to_lowercase();
+                    let q = text(v, "q").trim().trim_start_matches('@').to_lowercase();
                     let limit = int(v, "limit").clamp(1, 100) as usize;
-                    let ids: Vec<_> = s
-                        .users
-                        .values()
-                        .filter(|u| {
-                            !q.is_empty()
-                                && (u.username.to_lowercase().contains(&q)
-                                    || u.first.to_lowercase().contains(&q))
-                        })
-                        .take(limit)
-                        .map(|u| u.id)
-                        .collect();
+                    let mut results = vec![];
+                    let mut mine = vec![];
+                    let mut users = vec![];
+                    let mut chats = vec![];
+                    if !q.is_empty() && v["bots"] != true {
+                        if v["broadcasts"] != true {
+                            for u in s
+                                .users
+                                .values()
+                                .filter(|u| {
+                                    u.username.to_lowercase().contains(&q)
+                                        || format!("{} {}", u.first, u.last)
+                                            .to_lowercase()
+                                            .contains(&q)
+                                        || s.aliases.values().any(|a| {
+                                            a.kind == "user"
+                                                && a.owner == u.id
+                                                && a.active
+                                                && a.name.to_lowercase().contains(&q)
+                                        })
+                                })
+                                .take(limit)
+                            {
+                                results.push(json!({"_":"peerUser","user_id":u.id}));
+                                users.push(s.user(u.id, uid));
+                            }
+                        }
+                        for r in s.rooms.values() {
+                            let aliases: Vec<_> = s
+                                .aliases
+                                .values()
+                                .filter(|a| a.kind == "channel" && a.owner == r.id && a.active)
+                                .collect();
+                            let public =
+                                r.channel && (!r.username.is_empty() || !aliases.is_empty());
+                            let joined = r.members.contains_key(&uid);
+                            if (!public && !joined)
+                                || banned(r, uid, "view_messages")
+                                || (v["broadcasts"] == true && (!r.channel || r.mega))
+                            {
+                                continue;
+                            }
+                            if !(r.title.to_lowercase().contains(&q)
+                                || r.username.to_lowercase().contains(&q)
+                                || aliases.iter().any(|a| a.name.to_lowercase().contains(&q)))
+                            {
+                                continue;
+                            }
+                            if results.len() + mine.len() >= limit {
+                                break;
+                            }
+                            let p = if r.channel {
+                                json!({"_":"peerChannel","channel_id":r.id})
+                            } else {
+                                json!({"_":"peerChat","chat_id":r.id})
+                            };
+                            if joined {
+                                mine.push(p);
+                            } else {
+                                results.push(p);
+                            }
+                            chats.push(s.room(r.id, uid));
+                        }
+                    }
                     Ok(
-                        json!({"_":"contacts.found","my_results":[],"results":ids.iter().map(|id|json!({"_":"peerUser","user_id":id})).collect::<Vec<_>>(),"users":ids.iter().map(|id|s.user(*id,uid)).collect::<Vec<_>>(),"chats":[]}),
+                        json!({"_":"contacts.found","my_results":mine,"results":results,"users":users,"chats":chats}),
                     )
                 }
                 "contacts.getContacts" => {
