@@ -82,12 +82,55 @@ pub fn handle(s: &mut State, uid: i64, v: &Value, dir: &Path) -> Result<Value> {
         }
         "upload.getFile" => {
             let loc = &v["location"];
-            let id = int(loc, "id");
+            let peer_photo = text(loc, "_") == "inputPeerPhotoFileLocation";
+            let id = if peer_photo {
+                let (kind, peer_id) = peer(&loc["peer"], uid)?;
+                access(s, &kind, peer_id, uid, false)?;
+                let room = s
+                    .rooms
+                    .get(&peer_id)
+                    .filter(|_| kind != "user")
+                    .context("PHOTO_ID_INVALID")?;
+                if kind == "channel" {
+                    ensure!(
+                        int(&loc["peer"], "access_hash") == room.hash,
+                        "CHANNEL_INVALID"
+                    );
+                }
+                let photo = room.settings.get("photo").context("PHOTO_ID_INVALID")?;
+                ensure!(
+                    text(photo, "_") == "photo" && int(photo, "id") == int(loc, "photo_id"),
+                    "PHOTO_ID_INVALID"
+                );
+                int(photo, "id")
+            } else {
+                ensure!(
+                    matches!(
+                        text(loc, "_"),
+                        "inputPhotoFileLocation" | "inputDocumentFileLocation"
+                    ),
+                    "LOCATION_INVALID"
+                );
+                int(loc, "id")
+            };
             let f = s.files.get(&id).context("FILE_ID_INVALID")?;
-            ensure!(
-                int(loc, "access_hash") == f.hash && bytes(&loc["file_reference"])? == f.reference,
-                "FILE_REFERENCE_EXPIRED"
-            );
+            if !peer_photo {
+                let reference = bytes(&loc["file_reference"])?;
+                let hash_matches = int(loc, "access_hash") == f.hash;
+                let reference_matches = reference == f.reference;
+                if !hash_matches || !reference_matches {
+                    tracing::debug!(
+                        location = text(loc, "_"),
+                        file_id = id,
+                        hash_matches,
+                        reference_matches,
+                        reference_length = reference.len(),
+                        thumb_size = text(loc, "thumb_size"),
+                        "File download credentials mismatch"
+                    );
+                    bail!("FILE_REFERENCE_EXPIRED");
+                }
+            }
             let offset = int(v, "offset");
             let limit = int(v, "limit");
             ensure!(
@@ -99,9 +142,12 @@ pub fn handle(s: &mut State, uid: i64, v: &Value, dir: &Path) -> Result<Value> {
             file.seek(SeekFrom::Start(offset as u64))?;
             let mut data = vec![];
             file.take(limit as u64).read_to_end(&mut data)?;
-            Ok(
-                json!({"_":"upload.file","type":{"_":"storage.fileUnknown"},"mtime":f.date,"bytes":data}),
-            )
+            let file_type = match f.mime.as_str() {
+                "image/jpeg" => "storage.fileJpeg",
+                "image/png" => "storage.filePng",
+                _ => "storage.fileUnknown",
+            };
+            Ok(json!({"_":"upload.file","type":{"_":file_type},"mtime":f.date,"bytes":data}))
         }
         _ => bail!("METHOD_NOT_IMPLEMENTED"),
     }
