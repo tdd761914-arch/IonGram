@@ -99,6 +99,7 @@ impl ServerKey {
 // Telegram's published 2048-bit safe prime, generator 3.
 const PRIME: &str = "C71CAEB9C6B1C9048E6C522F70F13F73980D40238E3E21C14934D037563D930F48198A0AA7C14058229493D22530F4DBFA336F6E0AC925139543AED44CCE7C3720FD51F69458705AC68CD4FE6B6B13ABDC9746512969328454F18FAF8C595F642477FE96BB2A941D5BCD1D4AC8CC49880708FA9B378E3C4F3A9060BEE67CF9A4A4A695811051907E162753B56B0F6B410DBA74D8A84B2A14B3144E0EF1284754FD17ED950D5965B4B9DD46582DB1178D169C6BC465B0D6FF9CA3928FEF5B9AE4E418FC15E83EBEA0F87FA9FF5EED70050DED2849F47BF959D956850CE929851F0D8115F635B105EE2E4E15D04B2454BF6F4FADF034B10403119CD8E3B92FCC5B";
 pub struct Handshake {
+    pub expires_at: Option<i64>,
     nonce: Value,
     server: Vec<u8>,
     new: Vec<u8>,
@@ -111,6 +112,7 @@ pub struct Handshake {
 impl Handshake {
     pub fn new(nonce: Value) -> Self {
         Self {
+            expires_at: None,
             nonce,
             server: random(16),
             new: vec![],
@@ -157,6 +159,11 @@ impl Handshake {
                 && bytes(&inner["pq"])? == ((1000000007u64) * (1000000009u64)).to_be_bytes(),
             "inner factors"
         );
+        if inner["_"].as_str().unwrap_or("").contains("_temp") {
+            let lifetime = inner["expires_in"].as_i64().unwrap_or(0);
+            ensure!((1..=604800).contains(&lifetime), "temporary key lifetime");
+            self.expires_at = Some(now() + lifetime);
+        }
         self.new = bytes(&inner["new_nonce"])?;
         ensure!(self.new.len() == 32, "new nonce");
         self.secret = BigUint::from_bytes_be(&random(256));
@@ -286,4 +293,52 @@ mod tests {
         encrypted[25] ^= 1;
         assert!(server.decrypt(&encrypted, &schema).is_err());
     }
+}
+
+/// MTProto v1 is required specifically for the permanent-key binding proof.
+pub fn decrypt_binding(
+    auth: &[u8],
+    packet: &[u8],
+    message_id: i64,
+    schema: &Schema,
+) -> Result<Value> {
+    ensure!(
+        auth.len() == 256
+            && packet.len() >= 104
+            && packet.len() <= 4096
+            && (packet.len() - 24).is_multiple_of(16),
+        "binding length"
+    );
+    ensure!(packet[..8] == auth_id(auth).to_le_bytes(), "binding key id");
+    let msg = &packet[8..24];
+    let a = sha1!(msg, &auth[..32]);
+    let b = sha1!(&auth[32..48], msg, &auth[48..64]);
+    let c = sha1!(&auth[64..96], msg);
+    let d = sha1!(msg, &auth[96..128]);
+    let mut key = [0; 32];
+    key[..8].copy_from_slice(&a[..8]);
+    key[8..20].copy_from_slice(&b[8..20]);
+    key[20..].copy_from_slice(&c[4..16]);
+    let mut iv = [0; 32];
+    iv[..12].copy_from_slice(&a[8..20]);
+    iv[12..20].copy_from_slice(&b[..8]);
+    iv[20..24].copy_from_slice(&c[16..20]);
+    iv[24..].copy_from_slice(&d[..8]);
+    let mut plain = packet[24..].to_vec();
+    ige_decrypt(&mut plain, &key, &iv);
+    ensure!(
+        i64::from_le_bytes(plain[16..24].try_into()?) == message_id,
+        "binding message id"
+    );
+    ensure!(
+        plain[24..28] == [0; 4] && i32::from_le_bytes(plain[28..32].try_into()?) == 40,
+        "binding header"
+    );
+    ensure!(
+        bool::from(sha1!(&plain[..72])[4..20].ct_eq(msg)),
+        "binding hash"
+    );
+    let inner = schema.decode(&plain[32..72])?;
+    ensure!(inner["_"] == "bind_auth_key_inner", "binding constructor");
+    Ok(inner)
 }

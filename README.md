@@ -114,10 +114,16 @@ are not implemented.
 Unsupported methods return `METHOD_NOT_IMPLEMENTED`; they are not reported as successful.
 This version does not implement bots, calls, stories, secret chats, web transports,
 external payment providers, auctions, staking, gift crafting/collections, or full
-multi-DC/PFS authorization. Some channel setting handlers persist configuration
+multi-DC authorization. Some channel setting handlers persist configuration
 without implementing every Telegram client-side behavior (for example slow-mode timing).
 History filtering/pagination covers the basic ID/date/text case, not every Telegram filter.
 The TCP server and key exchange are experimental and have not undergone a security audit.
+
+Temporary authorization keys support `auth.bindTempAuthKey`: the server validates
+MTProto v1 encrypted binding proofs, persists temp-to-permanent identities in
+SQLite, and resolves login state through the permanent key. Expiry comes from
+the DH handshake; expired temporary keys are rejected and reclaimed on later
+key creation. This is basic PFS interoperability, not a full key-retention audit.
 
 ## Validation
 

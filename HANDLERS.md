@@ -17,6 +17,8 @@ Behavior and limitations are documented in README.md. Unsupported API methods re
 
 ## auth
 
+- `auth.bindTempAuthKey` (MTProto session dispatcher)
+
 - `auth.logOut`
 - `auth.sendCode`
 - `auth.signIn`

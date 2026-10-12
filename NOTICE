@@ -5,7 +5,8 @@ Behavioral references:
   MIT; Copyright 2023 Davide Galilei. Original attribution retained in LICENSE.
 - iamxvbaba/gramsrv, 45015f495369dbbe8bda60fd71ab85113297e87c.
   Apache-2.0. Consulted for per-user update allocation, transactional Stars,
-  channel permissions and collectible username registry semantics. Go source
+  channel permissions, collectible username registry semantics, and temporary-key
+  binding proof/expiry/identity semantics. Go source
   is not incorporated; IonGram implements these behaviors independently.
 
 API definitions are fetched separately from TGScheme/Schema:

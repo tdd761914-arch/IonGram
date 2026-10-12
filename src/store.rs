@@ -7,6 +7,10 @@ use std::{collections::BTreeMap, path::Path};
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct State {
     #[serde(default)]
+    pub temp_expiry: BTreeMap<i64, i64>,
+    #[serde(default)]
+    pub key_bindings: BTreeMap<i64, i64>,
+    #[serde(default)]
     pub aliases: BTreeMap<String, Alias>,
     #[serde(default)]
     pub username_orders: BTreeMap<String, Vec<String>>,
