@@ -13,6 +13,11 @@ pub fn handle(s: &mut State, uid: i64, key: i64, v: &Value, schema: &Schema) -> 
                 .collect();
             ensure!((5..=15).contains(&phone.len()), "PHONE_NUMBER_INVALID");
             if let Some(c) = s.pending.get(&phone) {
+                if c.key == key && c.expires > now() && c.attempts < 5 {
+                    return Ok(
+                        json!({"_":"auth.sentCode","type":{"_":"auth.sentCodeTypeApp","length":5},"phone_code_hash":c.hash,"timeout":c.expires-now()}),
+                    );
+                }
                 ensure!(c.expires - now() < 240, "FLOOD_WAIT_60")
             }
             let code = format!("{:05}", random_id() % 100000);
