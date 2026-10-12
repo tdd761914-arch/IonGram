@@ -5,15 +5,26 @@ use crate::store::{Form, Gift, OwnedGift};
 fn amount(n: i64) -> Value {
     json!({"_":"starsAmount","amount":n,"nanos":0})
 }
-fn gift(s: &State, g: &Gift) -> Result<Value> {
-    Ok(
-        json!({"_":"starGift","id":g.id,"title":g.title,"sticker":s.doc(g.file)?,"stars":g.price,"convert_stars":g.price,"limited":true,"availability_remains":g.supply-g.sold,"availability_total":g.supply,"upgrade_stars":g.upgrade}),
-    )
+pub(super) fn gift(s: &State, g: &Gift) -> Result<Value> {
+    let mut v = json!({"_":"starGift","id":g.id,"title":g.title,"sticker":s.doc(g.file)?,"stars":g.price,"convert_stars":g.price,"limited":true,"availability_remains":g.supply-g.sold,"availability_total":g.supply,"upgrade_stars":g.upgrade});
+    if let Some(a) = s.auctions.get(&g.id) {
+        v["auction"] = json!(true);
+        v["auction_slug"] = json!(format!("IonAuction-{}", g.id));
+        v["gifts_per_round"] = json!(a.per_round);
+        v["auction_start_date"] = json!(a.start);
+    }
+    Ok(v)
 }
 fn style_catalog(s: &State, g: &Gift) -> Result<Vec<Value>> {
     let mut attrs = vec![
         json!({"_":"starGiftAttributeModel","name":"Original","document":s.doc(g.file)?,"rarity":{"_":"starGiftAttributeRarity","permille":1000}}),
     ];
+    if s.gift_styles.get(&g.id).is_some_and(|a| {
+        a.iter()
+            .any(|v| v["_"] == "starGiftAttributeModel" && v["crafted"] != true)
+    }) {
+        attrs.clear();
+    }
     attrs.extend(s.gift_styles.get(&g.id).cloned().unwrap_or_default());
     Ok(attrs)
 }
@@ -77,8 +88,10 @@ fn owned_id(v: &Value) -> i64 {
 }
 fn price(s: &State, v: &Value, uid: i64) -> Result<i64> {
     match text(v, "_") {
+        "inputInvoiceStarGiftAuctionBid" => super::auctions::bid_price(s, uid, v),
         "inputInvoiceStarGift" => {
             let g = s.gifts.get(&int(v, "gift_id")).context("GIFT_NOT_FOUND")?;
+            ensure!(!s.auctions.contains_key(&g.id), "STARGIFT_AUCTION_ONLY");
             ensure!(g.sold < g.supply, "STARGIFT_USAGE_LIMITED");
             let (_, u) = peer(&v["peer"], uid)?;
             ensure!(s.users.contains_key(&u), "USER_ID_INVALID");
@@ -118,6 +131,9 @@ fn price(s: &State, v: &Value, uid: i64) -> Result<i64> {
 pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
     let name = text(v, "_");
     match name {
+        "payments.getStarGiftAuctionState"
+        | "payments.getStarGiftAuctionAcquiredGifts"
+        | "payments.getStarGiftActiveAuctions" => super::auctions::handle(s, uid, v),
         "payments.getCraftStarGifts" | "payments.craftStarGift" => super::craft::handle(s, uid, v),
         "payments.getStarsStatus"
         | "payments.getStarsTransactions"
@@ -164,7 +180,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
             let gifts: Vec<_> = s
                 .gifts
                 .values()
-                .filter(|g| g.sold < g.supply)
+                .filter(|g| g.sold < g.supply && s.auctions.get(&g.id).is_none_or(|a| a.start > 0))
                 .map(|g| gift(s, g))
                 .collect::<Result<_>>()?;
             let hash = (s.gifts.len() as i32)
@@ -285,6 +301,7 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
             s.credit(uid, -form.price, "purchase")?;
             let inv = &form.invoice;
             match text(inv, "_") {
+                "inputInvoiceStarGiftAuctionBid" => super::auctions::place_bid(s, uid, inv)?,
                 "inputInvoiceStarGift" => {
                     let (_, owner) = peer(&inv["peer"], uid)?;
                     let gift_id = int(inv, "gift_id");

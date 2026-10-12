@@ -51,6 +51,42 @@ impl Server {
     pub async fn serve(self: Arc<Self>, bind: &str) -> Result<()> {
         let listener = TcpListener::bind(bind).await?;
         tracing::info!(%bind,fingerprint=self.key.fingerprint,"IonGram listening; API layers 229, 231");
+        let auction_server = self.clone();
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                timer.tick().await;
+                let mut store = auction_server.store.lock().await;
+                if !store.state.auctions.values().any(|a| {
+                    a.start > 0
+                        && a.completed < a.rounds
+                        && crypto::now() >= a.start + (a.completed + 1) * a.duration
+                }) {
+                    continue;
+                }
+                let mut state = store.state.clone();
+                let before = state.pts;
+                match handlers::auctions::tick(&mut state, crypto::now()) {
+                    Ok(true) => {
+                        let events = state
+                            .events
+                            .iter()
+                            .filter(|e| e.pts > before)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if let Err(e) = store.save(state) {
+                            tracing::error!(error=%e,"auction save failed");
+                            continue;
+                        }
+                        for e in events {
+                            let _ = auction_server.events.send(e);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => tracing::error!(error=%e,"auction settlement failed"),
+                }
+            }
+        });
         let slots = Arc::new(Semaphore::new(128));
         loop {
             let (socket, addr) = listener.accept().await?;

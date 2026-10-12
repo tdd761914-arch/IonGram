@@ -64,6 +64,32 @@ async fn main() -> Result<()> {
             store.save(state)?;
             println!("Premium granted")
         }
+        "import-auction" => {
+            let manifest = PathBuf::from(args.get(2).context("import-auction MANIFEST.json")?);
+            let mut store = server.store.lock().await;
+            let mut state = store.state.clone();
+            let id = iongram::gift_import::import(&mut state, &manifest, &dir, &server.schemas)?;
+            store.save(state)?;
+            println!("Auction gift {id} imported; waiting for auction-start");
+        }
+        "auction-start" => {
+            let id = args
+                .get(2)
+                .context("auction-start GIFT_ID")?
+                .parse::<i64>()?;
+            let mut store = server.store.lock().await;
+            let mut state = store.state.clone();
+            let a = state.auctions.get_mut(&id).context("auction not found")?;
+            ensure!(a.start == 0, "auction already started");
+            a.start = now();
+            a.version += 1;
+            println!(
+                "Auction {id} starts at {}, ends at {}",
+                a.start,
+                a.start + a.rounds * a.duration
+            );
+            store.save(state)?;
+        }
         "import-gift" => {
             let path = args
                 .get(2)
