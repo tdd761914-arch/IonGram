@@ -64,6 +64,18 @@ async fn main() -> Result<()> {
             store.save(state)?;
             println!("Premium granted")
         }
+        "gift-styles-import" => {
+            let id = args
+                .get(2)
+                .context("gift-styles-import GIFT_ID MANIFEST.json")?
+                .parse::<i64>()?;
+            let manifest = PathBuf::from(args.get(3).context("manifest missing")?);
+            let mut store = server.store.lock().await;
+            let mut state = store.state.clone();
+            iongram::gift_import::styles(&mut state, id, &manifest, &dir, &server.schemas)?;
+            store.save(state)?;
+            println!("Gift {id} styles imported");
+        }
         "import-auction" => {
             let manifest = PathBuf::from(args.get(2).context("import-auction MANIFEST.json")?);
             let mut store = server.store.lock().await;

@@ -45,11 +45,20 @@ pub fn assign_style(s: &mut State, id: i64) -> Result<()> {
             .filter(|a| text(a, "_") == kind && a["crafted"] != true)
             .collect();
         if !choices.is_empty() {
-            let total: i64 = choices.iter().map(|a| int(&a["rarity"], "permille")).sum();
+            let total: i64 = choices
+                .iter()
+                .map(|a| {
+                    a["selection_weight"]
+                        .as_i64()
+                        .unwrap_or(int(&a["rarity"], "permille"))
+                })
+                .sum();
             ensure!(total > 0, "GIFT_ATTRIBUTES_INVALID");
             let mut draw = random_id() % total;
             for a in choices {
-                let weight = int(&a["rarity"], "permille");
+                let weight = a["selection_weight"]
+                    .as_i64()
+                    .unwrap_or(int(&a["rarity"], "permille"));
                 if draw < weight {
                     selected.push(a.clone());
                     break;

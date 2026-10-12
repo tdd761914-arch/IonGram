@@ -116,3 +116,106 @@ pub fn import(s: &mut State, manifest: &Path, dir: &Path, schemas: &[Schema; 2])
     );
     Ok(id)
 }
+
+pub fn styles(
+    s: &mut State,
+    id: i64,
+    manifest: &Path,
+    dir: &Path,
+    schemas: &[Schema; 2],
+) -> Result<()> {
+    ensure!(s.gifts.contains_key(&id), "gift not found");
+    let v: Value = serde_json::from_slice(&std::fs::read(manifest)?)?;
+    let base = manifest
+        .parent()
+        .context("manifest directory missing")?
+        .canonicalize()?;
+    let patterns = v["patterns"].as_array().context("patterns missing")?;
+    let backdrops = v["backdrops"].as_array().context("backdrops missing")?;
+    ensure!(
+        !patterns.is_empty()
+            && patterns.len() <= 1000
+            && !backdrops.is_empty()
+            && backdrops.len() <= 1000,
+        "invalid style count"
+    );
+    let mut attrs = vec![];
+    let mut total = 0;
+    for p in patterns {
+        let weight = p["permille"].as_i64().context("pattern rarity missing")?;
+        ensure!((1..=1000).contains(&weight), "invalid rarity");
+        total += weight;
+        let path = base
+            .join(p["file"].as_str().context("pattern file missing")?)
+            .canonicalize()?;
+        ensure!(
+            path.starts_with(&base),
+            "pattern outside manifest directory"
+        );
+        let name = p["name"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .context("pattern name missing")?;
+        let file = document(s, &std::fs::read(path)?, dir)?;
+        attrs.push(json!({"_":"starGiftAttributePattern","name":name,"document":s.doc(file)?,"rarity":{"_":"starGiftAttributeRarity","permille":weight}}));
+    }
+    ensure!(total == 1000, "pattern rarities must total 1000");
+    total = 0;
+    let mut ids = BTreeSet::new();
+    for b in backdrops {
+        ensure!(
+            b["_"] == "starGiftAttributeBackdrop"
+                && b["name"].as_str().is_some_and(|s| !s.is_empty()),
+            "invalid backdrop"
+        );
+        let id = b["backdrop_id"].as_i64().context("backdrop id missing")?;
+        ensure!(
+            (0..=i32::MAX as i64).contains(&id) && ids.insert(id),
+            "invalid backdrop id"
+        );
+        for key in ["center_color", "edge_color", "pattern_color", "text_color"] {
+            ensure!(
+                b[key].as_i64().is_some_and(|n| (0..=0xffffff).contains(&n)),
+                "invalid backdrop color"
+            );
+        }
+        let weight = b["rarity"]["permille"]
+            .as_i64()
+            .context("backdrop rarity missing")?;
+        ensure!((1..=1000).contains(&weight), "invalid rarity");
+        total += weight;
+        attrs.push(b.clone());
+    }
+    ensure!(total == 1000, "backdrop rarities must total 1000");
+    if v["uniform"] == true {
+        for a in &mut attrs {
+            a["selection_weight"] = json!(1);
+        }
+    }
+    for a in &attrs {
+        for schema in schemas {
+            schema.encode(a)?;
+        }
+    }
+    let catalog = s.gift_styles.entry(id).or_default();
+    catalog
+        .retain(|a| a["_"] != "starGiftAttributePattern" && a["_"] != "starGiftAttributeBackdrop");
+    catalog.extend(attrs);
+    // Preserve previously selected models while filling missing style categories.
+    let owned: Vec<_> = s
+        .owned
+        .values()
+        .filter(|o| o.gift == id && o.upgraded && !o.converted)
+        .map(|o| o.id)
+        .collect();
+    for oid in owned {
+        let old = s.owned_styles.remove(&oid).unwrap_or_default();
+        crate::handlers::gifts::assign_style(s, oid)?;
+        let assigned = s.owned_styles.get_mut(&oid).unwrap();
+        for previous in old {
+            assigned.retain(|a| a["_"] != previous["_"]);
+            assigned.push(previous);
+        }
+    }
+    Ok(())
+}

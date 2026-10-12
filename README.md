@@ -113,7 +113,7 @@ are not implemented.
 
 Unsupported methods return `METHOD_NOT_IMPLEMENTED`; they are not reported as successful.
 This version does not implement bots, calls, stories, secret chats, web transports,
-external payment providers, auctions, staking, gift collections, or full
+external payment providers, staking, gift collections, or full
 multi-DC authorization. Some channel setting handlers persist configuration
 without implementing every Telegram client-side behavior (for example slow-mode timing).
 History filtering/pagination covers the basic ID/date/text case, not every Telegram filter.
@@ -195,3 +195,22 @@ Changing layers requires reviewing changed constructors and updating compatibili
 
 IonGram code: [MIT](LICENSE). Third-party dependencies and external schemas retain
 their respective notices. See [NOTICE](NOTICE).
+
+### Configurable gift auctions
+
+`iongram import-auction /path/to/import.json` imports a collection into SQLite,
+including its models and auction configuration. The manifest contains `id`,
+`title`, `original` (relative TGS path), `price` (minimum bid), `supply`, `upgrade`,
+`rounds`, `duration` (seconds), `per_round`, and `models` entries with `name`,
+`file` and `permille`. Supply must equal rounds times gifts per round.
+Zero-weight models are reserved for crafting; ordinary upgrades use positive
+weights proportionally. Imported collections are not embedded in source code.
+
+Stop the service for imports and `iongram auction-start GIFT_ID`; use the same
+`IONGRAM_DATA` as the service, then restart it. Auction configuration, start time,
+bid escrow and results persist in SQLite. One active bid per account is allowed;
+the highest bids win one gift each per round, ties favor the earlier bid.
+Increasing a bid debits only the difference. Losing bids carry forward and are
+refunded after the final round. Unallocated gifts remain unissued. A background
+worker settles rounds and catches up after restarts. Both API layers expose the
+auction state, acquired gifts, active auctions and auction bid payment forms.
