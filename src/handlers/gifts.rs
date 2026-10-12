@@ -94,7 +94,7 @@ pub(super) fn unique(s: &State, o: &OwnedGift) -> Result<Value> {
     let mut value = json!({"_":"starGiftUnique","id":o.id,"gift_id":g.id,"title":g.title,"slug":format!("IonGift-{}",o.id),"num":s.gift_numbers.get(&o.id).copied().context("GIFT_NUMBER_MISSING")?,"owner_id":{"_":"peerUser","user_id":o.owner},"attributes":s.owned_styles.get(&o.id).cloned().unwrap_or(style_catalog(s,g)?.into_iter().take(1).collect()),"availability_issued":g.sold,"availability_total":g.supply});
     value["crafted"] = json!(s.crafted_gifts.contains_key(&o.id));
     if super::craft::eligible(s, o) {
-        value["craft_chance_permille"] = json!(334);
+        value["craft_chance_permille"] = json!(999);
     }
     if o.resale > 0 {
         value["resell_amount"] = json!([amount(o.resale)]);
@@ -104,6 +104,9 @@ pub(super) fn unique(s: &State, o: &OwnedGift) -> Result<Value> {
 
 pub(super) fn saved(s: &State, o: &OwnedGift) -> Result<Value> {
     let mut value = json!({"_":"savedStarGift","date":o.date,"gift":if o.upgraded{unique(s,o)?}else{gift(s,&s.gifts[&o.gift])?},"msg_id":o.id,"saved_id":o.id,"from_id":{"_":"peerUser","user_id":o.sender},"unsaved":o.hidden,"can_upgrade":!o.upgraded,"pinned_to_top":o.pinned,"convert_stars":o.price,"upgrade_stars":s.gifts[&o.gift].upgrade});
+    if let Some(number) = s.gift_numbers.get(&o.id) {
+        value["gift_num"] = json!(number);
+    }
     if super::craft::eligible(s, o) {
         value["can_craft_at"] = json!(o.date);
     }
@@ -520,6 +523,10 @@ pub fn migrate_numbers(s: &mut State) -> bool {
     fn repair(v: &mut Value, numbers: &std::collections::BTreeMap<i64, i64>) -> bool {
         let mut changed = false;
         if v["_"] == "starGiftUnique" {
+            if !v["craft_chance_permille"].is_null() && v["craft_chance_permille"] != 999 {
+                v["craft_chance_permille"] = json!(999);
+                changed = true;
+            }
             if let Some(n) = numbers.get(&int(v, "id")) {
                 if v["num"] != *n {
                     v["num"] = json!(n);

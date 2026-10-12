@@ -1,4 +1,4 @@
-//! IonGram recipe: three upgraded gifts of one collection produce one craft model.
+//! Craft two to four upgraded gifts, with a fixed 999/1000 success probability.
 use super::*;
 use crate::{
     crypto::random_id,
@@ -16,6 +16,13 @@ pub fn eligible(s: &State, o: &OwnedGift) -> bool {
         })
 }
 fn result(s: &State, uid: i64, id: i64) -> Result<Value> {
+    if id == 0 {
+        return Ok(updates(
+            vec![],
+            vec![],
+            vec![json!({"_":"updateStarGiftCraftFail"})],
+        ));
+    }
     let message = s
         .messages
         .iter()
@@ -48,7 +55,10 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         return Ok(out);
     }
     let inputs = list(v, "stargift");
-    ensure!(inputs.len() == 3, "CRAFT_REQUIRES_THREE_GIFTS");
+    ensure!(
+        (2..=4).contains(&inputs.len()),
+        "CRAFT_REQUIRES_TWO_TO_FOUR_GIFTS"
+    );
     let mut ids = vec![];
     for input in inputs {
         let id = match text(&input, "_") {
@@ -68,7 +78,10 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         ids.push(id);
     }
     ids.sort_unstable();
-    let token = format!("{uid}:{}:{}:{}", ids[0], ids[1], ids[2]);
+    let token = format!(
+        "{uid}:{}",
+        ids.iter().map(i64::to_string).collect::<Vec<_>>().join(":")
+    );
     if let Some(id) = s.craft_receipts.get(&token) {
         return result(s, uid, *id);
     }
@@ -90,6 +103,17 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
         .cloned()
         .collect();
     ensure!(!models.is_empty(), "STARGIFT_CRAFT_UNAVAILABLE");
+    if random_id() % 1000 == 999 {
+        for id in &ids {
+            let o = s.owned.get_mut(id).unwrap();
+            o.converted = true;
+            o.hidden = true;
+            o.pinned = false;
+        }
+        s.craft_receipts.insert(token, 0);
+        s.record(vec![uid], json!({"_":"updateStarGiftCraftFail"}));
+        return result(s, uid, 0);
+    }
     let model = models[random_id() as usize % models.len()].clone();
     let id = s.id();
     s.owned.insert(

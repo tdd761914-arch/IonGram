@@ -143,8 +143,10 @@ The command also fills in styles for previously upgraded gifts lacking a backgro
 ### Gift crafting
 
 `payments.getCraftStarGifts` lists eligible owned gifts. `payments.craftStarGift`
-consumes exactly **three upgraded, unlisted gifts of the same collection** and
-creates one with a craft-only model, with no Stars fee and no failure chance.
+consumes **two to four upgraded, unlisted gifts of the same collection** and
+creates one with a craft-only model with **99.9% success probability**, regardless
+of ingredient count. No Stars fee is charged. Ingredients are consumed on success
+and failure; the rare failure returns `updateStarGiftCraftFail`.
 Inputs cannot be reused or refunded, and mint supply is not replenished. The
 result and consumed IDs commit atomically in SQLite; retries return the same result.
 Crafted outputs cannot be used as ingredients in this recipe.

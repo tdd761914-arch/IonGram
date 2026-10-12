@@ -140,9 +140,12 @@ async fn main() -> Result<()> {
         "craft" => {
             let uid = args
                 .get(2)
-                .context("craft USER_ID GIFT_ID GIFT_ID GIFT_ID")?
+                .context("craft USER_ID GIFT_ID GIFT_ID [GIFT_ID [GIFT_ID]]")?
                 .parse::<i64>()?;
-            ensure!(args.len() == 6, "exactly three gift instance IDs required");
+            ensure!(
+                (5..=7).contains(&args.len()),
+                "two to four gift instance IDs required"
+            );
             let ids: Vec<i64> = args[3..]
                 .iter()
                 .map(|s| s.parse())
@@ -157,7 +160,11 @@ async fn main() -> Result<()> {
             )?;
             let id = result["updates"][0]["message"]["id"].clone();
             store.save(state)?;
-            println!("Crafted gift {id}");
+            if id.is_null() {
+                println!("Craft failed; ingredients consumed");
+            } else {
+                println!("Crafted gift {id}");
+            }
         }
         "gift-craft-model" => {
             let gift_id = args
