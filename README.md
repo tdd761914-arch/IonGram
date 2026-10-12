@@ -131,15 +131,16 @@ Stop the service before configuring a gift's upgrade attributes, and use the sam
 `IONGRAM_DATA` directory as the server:
 
 ```sh
-iongram gift-style GIFT_ID assets/gifts/hexagon-pattern.tgs assets/gifts/hexagon-backgrounds.json
+iongram gift-style GIFT_ID /path/to/pattern.tgs /path/to/backgrounds.json
 ```
 
-The supplied catalog has a hexagon pattern and black, red and green backgrounds.
+Gift catalogs and upgrade attributes are configured in SQLite. No gift collection
+is bundled with the source code. Imported media is stored under `IONGRAM_DATA/files`.
 Upgrading selects a background according to its rarity and persists the chosen
 attributes with the owned gift. Transfers and resale preserve those attributes.
 The command also fills in styles for previously upgraded gifts lacking a background.
 
-### Hexagon crafting
+### Gift crafting
 
 `payments.getCraftStarGifts` lists eligible owned gifts. `payments.craftStarGift`
 consumes exactly **three upgraded, unlisted gifts of the same collection** and
@@ -151,15 +152,13 @@ Crafted outputs cannot be used as ingredients in this recipe.
 Stop the service for these administrator commands:
 
 ```sh
-iongram gift-craft-model GIFT_ID assets/gifts/hexagon-crystal.tgs 'Кристалл'
-iongram gift-craft-model GIFT_ID assets/gifts/hexagon-plasma.tgs 'Плазма'
-iongram gift-craft-model GIFT_ID assets/gifts/hexagon-obsidian.tgs 'Обсидиан'
+iongram gift-craft-model GIFT_ID /path/to/model.tgs 'Model name'
 iongram craft USER_ID OWNED_GIFT_ID_1 OWNED_GIFT_ID_2 OWNED_GIFT_ID_3
 ```
 
 The inspected OwpenGram `CraftGiftSheet` is an unfinished UI; server RPC support
 does not add that screen to an installed APK. Use a client with crafting support
-or the administrator command above. TGS generators in `tools/` are original MIT assets.
+or the administrator command above.
 
 ## Validation
 
