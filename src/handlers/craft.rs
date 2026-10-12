@@ -51,11 +51,19 @@ pub fn handle(s: &mut State, uid: i64, v: &Value) -> Result<Value> {
     ensure!(inputs.len() == 3, "CRAFT_REQUIRES_THREE_GIFTS");
     let mut ids = vec![];
     for input in inputs {
-        ensure!(
-            text(&input, "_") == "inputSavedStarGiftUser",
-            "STARGIFT_INVALID"
-        );
-        let id = int(&input, "msg_id");
+        let id = match text(&input, "_") {
+            "inputSavedStarGiftUser" => int(&input, "msg_id"),
+            "inputSavedStarGiftSlug" => text(&input, "slug")
+                .strip_prefix("IonGift-")
+                .and_then(|s| s.parse::<i64>().ok())
+                .context("STARGIFT_INVALID")?,
+            "inputSavedStarGiftChat" => {
+                let (kind, owner) = peer(&input["peer"], uid)?;
+                ensure!(kind == "user" && owner == uid, "STARGIFT_OWNER_INVALID");
+                int(&input, "saved_id")
+            }
+            _ => bail!("STARGIFT_INVALID"),
+        };
         ensure!(id > 0 && !ids.contains(&id), "STARGIFT_INVALID");
         ids.push(id);
     }

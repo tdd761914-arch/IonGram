@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
                 .get(3)
                 .context("premium USER_ID DAYS")?
                 .parse::<i64>()?;
-            ensure!((1..=3650).contains(&days), "days out of range");
+            ensure!((1..=36525).contains(&days), "days out of range");
             let mut store = server.store.lock().await;
             let mut state = store.state.clone();
             let u = state.users.get_mut(&uid).context("unknown user")?;
